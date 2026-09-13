@@ -72,10 +72,28 @@
         /* Responsive Canvas Container */
         #gameWrapper {
             width: 100%;
-            max-width: 900px;
+            max-width: 1180px;
             aspect-ratio: 16 / 10;
             position: relative;
+            min-height: min(680px, calc(100vh - 110px));
+            overflow: hidden;
         }
+        #uiOverlay {
+            position: absolute;
+            inset: 0;
+            z-index: 30;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            overflow-x: hidden;
+            overflow-y: hidden;
+            -webkit-overflow-scrolling: auto;
+            overscroll-behavior: none;
+        }
+        #uiOverlay > * { flex-shrink: 0; }
+
         canvas {
             width: 100%;
             height: 100%;
@@ -86,6 +104,11 @@
         ::-webkit-scrollbar { width: 6px; }
         ::-webkit-scrollbar-track { background: #0f172a; }
         ::-webkit-scrollbar-thumb { background: #3b82f6; border-radius: 4px; }
+
+        .lvl2-panel { position: absolute; left: 12px; right: auto; bottom: 12px; width: 61%; }
+        @media (max-width: 760px) {
+            .lvl2-panel { width: 68%; }
+        }
     </style>
 </head>
 <body class="flex flex-col items-center justify-center min-h-screen p-2 sm:p-4">
@@ -142,63 +165,464 @@
         const hudOverlay = document.getElementById('hudOverlay');
         const hpContainer = document.getElementById('hpContainer');
 
-        // Assets placeholder
-        const GAME_ASSETS = { audio: {}, images: {} };
+        // ============================================================
+        // AUDIO CONFIG — edit volumes here, in one place.
+        // ============================================================
+        const AUDIO_VOLUME = {
+            bgm: {
+                menu: 0.28,
+                lvl1: 0.34,
+                lvl2: 0.30,
+                flight: 0.48,
+                lvl3: 0.34,
+                lvl4: 0.34,
+            },
+            sfx: {
+                droneExplode: 0.78,
+                lvl1Fail: 0.90,
+                denied: 0.90,
+                wrong: 0.72,
+                foodCatch: 0.34,
+                kumis: 0.43,
+                lvl3Fail: 0.50,
+                banhBao: 0.88,
+                scooterCrash: 0.50,
+                lvl4Fail: 0.95,
+                victory: 0.88,
+                gasolinePickup: 1.0,
+            },
+            tts: 0.95,
+            engine: 0.48,
+            engineFallback: 0.035,
+        };
 
-        // Audio System
+        // Extra gain lets individual effects exceed the normal HTMLAudio volume=1 ceiling.
+        const AUDIO_GAIN = {
+            sfx: {
+                gasolinePickup: 4.0
+            }
+        };
+
+        const GAME_AUDIO = {
+            bgm: {
+                menu: './audio/Main_Menu_BG.mp3',
+                lvl1: './audio/Lvl1_BGM.mp3',
+                lvl2: './audio/Lvl2_BGM.mp3',
+                lvl3: './audio/Lvl3_BGM.mp3',
+                lvl4: './audio/Lvl4_BGM.mp3',
+                flight: './audio/Flight_Song.mp3'
+            },
+            sfx: {
+                droneExplode: './audio/Drone_Explode.mp3',
+                lvl1Fail: './audio/Lvl1_Fail.mp3',
+                denied: './audio/Stamp_Denied.mp3',
+                wrong: './audio/Buzzer_Wrong.mp3',
+                foodCatch: './audio/Food_Catch.mp3',
+                kumis: './audio/Kumis_Ah.mp3',
+                lvl3Fail: './audio/Lvl3_Fail.mp3',
+                banhBao: './audio/BanhBao_Voice.mp3',
+                scooterCrash: './audio/Scooter_Crash.mp3',
+                lvl4Fail: './audio/Lvl4_Fail.mp3',
+                victory: './audio/Victory_Jingle.mp3',
+                // Optional custom gas-canister pickup sound. Safe to leave missing.
+                gasolinePickup: './audio/Gasoline_Pickup.mp3'
+            },
+            engine: './audio/Kalina_Engine.mp3'
+        };
+
+        // Put your MP3s in ./audio/. In particular, add ./audio/Kalina_Engine.mp3 for the Lada engine.
+        // Missing / broken files never stop the game. Each sound has a defined fallback.
         let soundEnabled = true;
+        const audioCache = new Map();
+        const audioFailed = new Set();
+        let currentBGM = null;
+        let currentBGMName = null;
+        let fallbackBgmNodes = [];
         let audioContext = null;
+        const activeOneShotAudios = new Set();
+        const pendingOneShotRequests = [];
+        const boostedGasNodes = new Set();
+
+        let engineAudio = null;
+        let engineOsc = null;
+        let engineOsc2 = null;
+        let engineGain = null;
+        let engineUsingSynth = false;
 
         function initAudioContext() {
-            if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            if (audioContext.state === 'suspended') audioContext.resume();
+            try {
+                if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                if (audioContext.state === 'suspended') audioContext.resume().catch(() => {});
+                return audioContext;
+            } catch (e) {
+                return null;
+            }
+        }
+
+        function getAudio(src, loop = false, volume = 1) {
+            if (!src || audioFailed.has(src)) return null;
+            if (!audioCache.has(src)) {
+                const a = new Audio();
+                a.preload = 'auto';
+                a.src = src;
+                a.loop = loop;
+                a.volume = Math.max(0, Math.min(1, volume));
+                a.addEventListener('error', () => audioFailed.add(src), { once: true });
+                a.load();
+                audioCache.set(src, a);
+            }
+            const a = audioCache.get(src);
+            a.loop = loop;
+            a.volume = Math.max(0, Math.min(1, volume));
+            return a;
+        }
+
+        function makeOneShotAudio(src, volume, gainMultiplier = 1) {
+            if (!src || audioFailed.has(src)) return null;
+            const a = new Audio();
+            a.preload = 'auto';
+            a.src = src;
+            // Keep normal SFX on the native media path. The previous version routed every
+            // effect through MediaElementSource -> AudioContext; a suspended AudioContext
+            // made the MP3 itself effectively silent even though play() succeeded.
+            a.volume = Math.max(0, Math.min(1, volume));
+            activeOneShotAudios.add(a);
+            const cleanup = () => {
+                activeOneShotAudios.delete(a);
+                a.removeEventListener('ended', cleanup);
+                a.removeEventListener('error', cleanup);
+            };
+            a.addEventListener('ended', cleanup);
+            a.addEventListener('error', () => {
+                audioFailed.add(src);
+                cleanup();
+            }, { once: true });
+            return a;
+        }
+
+        function stopAllOneShotAudio() {
+            pendingOneShotRequests.length = 0;
+            activeOneShotAudios.forEach(a => {
+                try { a.pause(); a.currentTime = 0; } catch (e) {}
+            });
+            activeOneShotAudios.clear();
+            boostedGasNodes.forEach(node => {
+                try { node.audio.pause(); node.audio.currentTime = 0; } catch (e) {}
+                try { node.source.disconnect(); } catch (e) {}
+                try { node.gain.disconnect(); } catch (e) {}
+            });
+            boostedGasNodes.clear();
+            if ('speechSynthesis' in window) {
+                try { window.speechSynthesis.cancel(); } catch (e) {}
+            }
+        }
+
+        function queueOneShotRetry(name, ttsText = null) {
+            const existing = pendingOneShotRequests.find(r => r.name === name);
+            if (!existing) pendingOneShotRequests.push({ name, ttsText });
+        }
+
+        function retryPendingOneShots() {
+            if (!soundEnabled || !pendingOneShotRequests.length) return;
+            const pending = pendingOneShotRequests.splice(0, pendingOneShotRequests.length);
+            pending.forEach(req => {
+                const played = playCustomSfx(req.name);
+                if (!played && req.ttsText) playVoiceLine(req.ttsText);
+            });
+        }
+
+        function playCustomSfx(name, ttsText = null, ttsRate = 0.88) {
+            if (!soundEnabled) return false;
+            const src = GAME_AUDIO.sfx[name];
+            if (!src || audioFailed.has(src)) {
+                if (ttsText) playVoiceLine(ttsText, 0, ttsRate);
+                return false;
+            }
+            const volume = AUDIO_VOLUME.sfx[name] ?? 0.8;
+            const a = makeOneShotAudio(src, volume);
+            if (!a) return false;
+            try {
+                const result = a.play();
+                if (result && typeof result.catch === 'function') {
+                    result.catch((err) => {
+                        activeOneShotAudios.delete(a);
+                        if (err?.name === 'NotAllowedError') queueOneShotRetry(name, ttsText);
+                    });
+                }
+                return true;
+            } catch (e) {
+                activeOneShotAudios.delete(a);
+                queueOneShotRetry(name, ttsText);
+                return false;
+            }
+        }
+
+        function playGasolinePickup() {
+            // Simple native MP3 path, same as the other one-shot effects. No layered copies,
+            // no WebAudio gain stage. The user explicitly preferred the old lightweight path.
+            if (playCustomSfx('gasolinePickup')) return true;
+            if (!soundEnabled) return false;
+            const ctx = initAudioContext();
+            if (!ctx) return false;
+            try {
+                const now = ctx.currentTime;
+                const master = ctx.createGain();
+                master.gain.setValueAtTime(0.0001, now);
+                master.gain.exponentialRampToValueAtTime(0.24, now + 0.01);
+                master.gain.exponentialRampToValueAtTime(0.0001, now + 0.28);
+                master.connect(ctx.destination);
+                [
+                    { f: 330, t: 0.00, d: 0.10 },
+                    { f: 494, t: 0.08, d: 0.12 },
+                    { f: 659, t: 0.16, d: 0.12 },
+                ].forEach(({f,t,d}) => {
+                    const o = ctx.createOscillator();
+                    const g = ctx.createGain();
+                    o.type = 'triangle';
+                    o.frequency.setValueAtTime(f, now + t);
+                    g.gain.setValueAtTime(0.0001, now + t);
+                    g.gain.exponentialRampToValueAtTime(0.65, now + t + 0.01);
+                    g.gain.exponentialRampToValueAtTime(0.0001, now + t + d);
+                    o.connect(g); g.connect(master);
+                    o.start(now + t); o.stop(now + t + d + 0.02);
+                });
+                return true;
+            } catch (e) { return false; }
+        }
+
+        function stopFallbackBgm() {
+            fallbackBgmNodes.forEach(node => {
+                try { node.stop(); } catch (e) {}
+                try { node.disconnect(); } catch (e) {}
+            });
+            fallbackBgmNodes = [];
+        }
+
+        function startFallbackBgm(name) {
+            if (!soundEnabled) return;
+            const ctx = initAudioContext();
+            if (!ctx || fallbackBgmNodes.length) return;
+
+            const bases = { menu: 110, lvl1: 82, lvl2: 98, flight: 65, lvl3: 123, lvl4: 73 };
+            const base = bases[name] || 90;
+
+            try {
+                const master = ctx.createGain();
+                master.gain.value = (AUDIO_VOLUME.bgm[name] ?? 0.25) * 0.18;
+                master.connect(ctx.destination);
+
+                const o1 = ctx.createOscillator();
+                const o2 = ctx.createOscillator();
+                o1.type = 'triangle';
+                o2.type = 'sine';
+                o1.frequency.value = base;
+                o2.frequency.value = base * 1.5;
+                o1.connect(master); o2.connect(master);
+                o1.start(); o2.start();
+                fallbackBgmNodes = [o1, o2, master];
+            } catch (e) {}
+        }
+
+        function playBGM(name) {
+            currentBGMName = name;
+            stopBGM(false);
+            if (!soundEnabled) return false;
+
+            const src = GAME_AUDIO.bgm[name];
+            if (!src || audioFailed.has(src)) return false;
+
+            try {
+                const a = getAudio(src, true, AUDIO_VOLUME.bgm[name] ?? 0.3);
+                if (!a) return false;
+                currentBGM = a;
+                const result = a.play();
+                if (result && typeof result.catch === 'function') {
+                    result.catch(() => {
+                        // Crucial: do NOT mark the MP3 as failed here.
+                        // Most first-play rejections are autoplay policy, not a bad file.
+                    });
+                }
+                return true;
+            } catch (e) {
+                return false;
+            }
+        }
+
+        function stopBGM(clearSelection = false) {
+            if (currentBGM) {
+                try { currentBGM.pause(); currentBGM.currentTime = 0; } catch (e) {}
+            }
+            currentBGM = null;
+            stopFallbackBgm();
+            if (clearSelection) currentBGMName = null;
+        }
+
+        function retryCurrentBGM() {
+            if (!soundEnabled || !currentBGMName) return;
+            const desiredName = currentBGMName;
+            if (currentBGM) {
+                try {
+                    const r = currentBGM.play();
+                    if (r?.catch) r.catch(() => {});
+                } catch (e) {}
+            } else {
+                playBGM(desiredName);
+            }
+        }
+
+        function playVoiceLine(text, delay = 0, rate = 0.88) {
+            if (!soundEnabled || !('speechSynthesis' in window)) return false;
+            const speak = () => {
+                try {
+                    const u = new SpeechSynthesisUtterance(text);
+                    const voices = window.speechSynthesis.getVoices ? window.speechSynthesis.getVoices() : [];
+                    const ruVoice = voices.find(v => /^ru/i.test(v.lang)) || voices.find(v => /ru/i.test(v.lang));
+                    if (ruVoice) u.voice = ruVoice;
+                    u.lang = 'ru-RU';
+                    u.rate = rate;
+                    u.pitch = 0.84;
+                    u.volume = AUDIO_VOLUME.tts;
+                    window.speechSynthesis.speak(u);
+                    return true;
+                } catch (e) {
+                    return false;
+                }
+            };
+            if (delay > 0) { setTimeout(speak, delay); return true; }
+            return speak();
+        }
+
+        function startEngineSynth() {
+            if (!soundEnabled || engineOsc || !initAudioContext()) return;
+            try {
+                const ctx = audioContext;
+                engineGain = ctx.createGain();
+                engineGain.gain.value = AUDIO_VOLUME.engineFallback;
+                engineGain.connect(ctx.destination);
+
+                engineOsc = ctx.createOscillator();
+                engineOsc.type = 'sawtooth';
+                engineOsc.frequency.value = 74;
+                engineOsc.connect(engineGain);
+
+                engineOsc2 = ctx.createOscillator();
+                engineOsc2.type = 'square';
+                engineOsc2.frequency.value = 37;
+                engineOsc2.connect(engineGain);
+
+                engineOsc.start();
+                engineOsc2.start();
+                engineUsingSynth = true;
+            } catch (e) {
+                engineOsc = engineOsc2 = engineGain = null;
+            }
+        }
+
+        function startEngineSound() {
+            if (!soundEnabled) return;
+            stopEngineSound();
+
+            const src = GAME_AUDIO.engine;
+            if (src && !audioFailed.has(src)) {
+                const a = getAudio(src, true, AUDIO_VOLUME.engine);
+                if (a) {
+                    engineAudio = a;
+                    const result = a.play();
+                    if (result && typeof result.catch === 'function') {
+                        result.catch((err) => {
+                            engineAudio = null;
+                            // NotAllowedError means browser autoplay policy, not a missing file.
+                            if (err?.name === 'NotAllowedError') return;
+                        });
+                    }
+                    return;
+                }
+            }
+            // Synth fallback is only for a genuinely missing/broken engine file.
+            if (src && !audioFailed.has(src)) return;
+            startEngineSynth();
+        }
+
+        function updateEngineSound() {
+            if (!engineUsingSynth || !engineOsc || !audioContext || gameState !== 'LVL1') return;
+            const rpm = 72 + lvl1Player.speed * 5 + Math.sin(performance.now() / 80) * 2;
+            try {
+                engineOsc.frequency.setTargetAtTime(rpm, audioContext.currentTime, 0.03);
+                engineOsc2.frequency.setTargetAtTime(rpm / 2, audioContext.currentTime, 0.03);
+            } catch (e) {}
+        }
+
+        function stopEngineSound() {
+            if (engineAudio) {
+                try { engineAudio.pause(); engineAudio.currentTime = 0; } catch (e) {}
+                engineAudio = null;
+            }
+            [engineOsc, engineOsc2].forEach(o => {
+                try { if (o) o.stop(); } catch (e) {}
+                try { if (o) o.disconnect(); } catch (e) {}
+            });
+            try { if (engineGain) engineGain.disconnect(); } catch (e) {}
+            engineOsc = engineOsc2 = engineGain = null;
+            engineUsingSynth = false;
         }
 
         function toggleAudio() {
             soundEnabled = !soundEnabled;
             document.getElementById('soundIcon').innerText = soundEnabled ? '🔊' : '🔇';
             document.getElementById('soundText').innerText = soundEnabled ? 'ВКЛ' : 'ВЫКЛ';
+
+            if (!soundEnabled) {
+                if (currentBGM) { try { currentBGM.pause(); } catch (e) {} }
+                stopFallbackBgm();
+                if ('speechSynthesis' in window) { try { window.speechSynthesis.cancel(); } catch (e) {} }
+                stopEngineSound();
+                return;
+            }
+
+            initAudioContext();
+            retryPendingOneShots();
+            if (gameState === 'MENU' || gameState === 'LVL1' || gameState === 'LVL2' || gameState === 'CUTSCENE' || gameState === 'LVL3' || gameState === 'LVL4') retryCurrentBGM();
+            if (gameState === 'LVL1') startEngineSound();
+        }
+
+        // Browser autoplay policies block audible playback until the first user gesture.
+        // We catch that first gesture and immediately retry the currently selected BGM.
+        function primeAudioFromUserGesture() {
+            initAudioContext();
+            retryPendingOneShots();
+            if (gameState === 'MENU') playBGM('menu');
+            else retryCurrentBGM();
+            if (gameState === 'LVL1' && !engineAudio && !engineOsc) startEngineSound();
         }
 
         function playSynthSound(type) {
             if (!soundEnabled) return;
-            initAudioContext();
+            const ctx = initAudioContext();
+            if (!ctx) return;
             try {
-                const ctx = audioContext;
                 const osc = ctx.createOscillator();
                 const gain = ctx.createGain();
-                osc.connect(gain);
-                gain.connect(ctx.destination);
+                osc.connect(gain); gain.connect(ctx.destination);
                 const now = ctx.currentTime;
-
                 if (type === 'hit') {
-                    osc.type = 'sawtooth';
-                    osc.frequency.setValueAtTime(150, now);
-                    osc.frequency.exponentialRampToValueAtTime(20, now + 0.3);
-                    gain.gain.setValueAtTime(0.4, now);
-                    gain.gain.linearRampToValueAtTime(0.01, now + 0.3);
+                    osc.type = 'sawtooth'; osc.frequency.setValueAtTime(150, now); osc.frequency.exponentialRampToValueAtTime(20, now + 0.3);
+                    gain.gain.setValueAtTime(0.34, now); gain.gain.linearRampToValueAtTime(0.01, now + 0.3);
                     osc.start(now); osc.stop(now + 0.3);
                 } else if (type === 'eat') {
-                    osc.type = 'sine';
-                    osc.frequency.setValueAtTime(400, now);
-                    osc.frequency.exponentialRampToValueAtTime(800, now + 0.1);
-                    gain.gain.setValueAtTime(0.3, now);
-                    gain.gain.linearRampToValueAtTime(0.01, now + 0.15);
+                    osc.type = 'sine'; osc.frequency.setValueAtTime(400, now); osc.frequency.exponentialRampToValueAtTime(800, now + 0.1);
+                    gain.gain.setValueAtTime(0.25, now); gain.gain.linearRampToValueAtTime(0.01, now + 0.15);
                     osc.start(now); osc.stop(now + 0.15);
                 } else if (type === 'denied') {
-                    osc.type = 'square';
-                    osc.frequency.setValueAtTime(100, now);
-                    osc.frequency.setValueAtTime(70, now + 0.2);
-                    gain.gain.setValueAtTime(0.3, now);
-                    gain.gain.linearRampToValueAtTime(0.01, now + 0.5);
+                    osc.type = 'square'; osc.frequency.setValueAtTime(100, now); osc.frequency.setValueAtTime(70, now + 0.2);
+                    gain.gain.setValueAtTime(0.3, now); gain.gain.linearRampToValueAtTime(0.01, now + 0.5);
                     osc.start(now); osc.stop(now + 0.5);
+                } else if (type === 'gasoline') {
+                    osc.type = 'triangle'; osc.frequency.setValueAtTime(220, now); osc.frequency.exponentialRampToValueAtTime(90, now + 0.08);
+                    gain.gain.setValueAtTime(0.12, now); gain.gain.linearRampToValueAtTime(0.01, now + 0.12);
+                    osc.start(now); osc.stop(now + 0.12);
                 } else if (type === 'win') {
-                    osc.type = 'triangle';
-                    [523.25, 659.25, 783.99, 1046.50].forEach((freq, i) => {
-                        osc.frequency.setValueAtTime(freq, now + i*0.15);
-                    });
-                    gain.gain.setValueAtTime(0.3, now);
-                    gain.gain.linearRampToValueAtTime(0.01, now + 0.8);
+                    osc.type = 'triangle'; [523.25, 659.25, 783.99, 1046.50].forEach((freq, i) => osc.frequency.setValueAtTime(freq, now + i * 0.15));
+                    gain.gain.setValueAtTime(0.3, now); gain.gain.linearRampToValueAtTime(0.01, now + 0.8);
                     osc.start(now); osc.stop(now + 0.8);
                 }
             } catch(e) {}
@@ -220,8 +644,9 @@
             setTimeout(() => { if(uiOverlay.classList.contains('opacity-0')) uiOverlay.innerHTML = ''; }, 300);
         }
 
-        // Particle System
+        // Particle System + Impact FX
         let particles = [];
+        let explosionEffects = [];
         function spawnParticles(x, y, color, count, speed = 2, size = 4) {
             for(let i=0; i<count; i++) {
                 particles.push({
@@ -232,10 +657,87 @@
                 });
             }
         }
+        function spawnExplosion(x, y, strength = 1) {
+            explosionEffects.push({ x, y, age: 0, life: 28, strength });
+            const sparks = Math.round(18 + 18 * strength);
+            for (let i = 0; i < sparks; i++) {
+                const a = Math.random() * Math.PI * 2;
+                const speed = 3 + Math.random() * 6 * strength;
+                particles.push({
+                    x, y,
+                    vx: Math.cos(a) * speed,
+                    vy: Math.sin(a) * speed,
+                    life: 0.7 + Math.random() * 0.4,
+                    color: Math.random() < 0.55 ? '#fbbf24' : (Math.random() < 0.55 ? '#f97316' : '#dc2626'),
+                    size: 2 + Math.random() * 5
+                });
+            }
+        }
+
+        function updateAndDrawExplosionEffects(c) {
+            for (let i = explosionEffects.length - 1; i >= 0; i--) {
+                const e = explosionEffects[i];
+                e.age += 1;
+                const t = e.age / e.life;
+                if (t >= 1) { explosionEffects.splice(i, 1); continue; }
+
+                c.save();
+                c.globalCompositeOperation = 'lighter';
+                const core = Math.max(0.01, 1 - t);
+                const radius = (18 + 62 * Math.sin(Math.min(1, t) * Math.PI / 2)) * e.strength;
+
+                // White-hot core -> yellow -> orange fireball.
+                let g = c.createRadialGradient(e.x, e.y, 0, e.x, e.y, radius);
+                g.addColorStop(0, `rgba(255,255,245,${0.95 * core})`);
+                g.addColorStop(0.18, `rgba(255,235,120,${0.92 * core})`);
+                g.addColorStop(0.48, `rgba(255,120,10,${0.78 * core})`);
+                g.addColorStop(0.78, `rgba(220,38,38,${0.45 * core})`);
+                g.addColorStop(1, 'rgba(80,10,10,0)');
+                c.fillStyle = g;
+                c.beginPath(); c.arc(e.x, e.y, radius, 0, Math.PI * 2); c.fill();
+
+                // Jagged flame tongues.
+                for (let k = 0; k < 9; k++) {
+                    const ang = (Math.PI * 2 * k / 9) + e.age * 0.09;
+                    const len = (14 + Math.random() * 22) * e.strength * core;
+                    const bx = e.x + Math.cos(ang) * radius * 0.55;
+                    const by = e.y + Math.sin(ang) * radius * 0.55;
+                    c.fillStyle = k % 2 ? `rgba(249,115,22,${0.7 * core})` : `rgba(251,191,36,${0.78 * core})`;
+                    c.beginPath();
+                    c.moveTo(bx, by);
+                    c.lineTo(bx + Math.cos(ang - 0.35) * len, by + Math.sin(ang - 0.35) * len);
+                    c.lineTo(bx + Math.cos(ang + 0.35) * len, by + Math.sin(ang + 0.35) * len);
+                    c.closePath(); c.fill();
+                }
+
+                // Expanding shockwave ring.
+                c.globalCompositeOperation = 'source-over';
+                c.strokeStyle = `rgba(255,237,213,${0.8 * core})`;
+                c.lineWidth = Math.max(2, 8 * core);
+                c.beginPath(); c.arc(e.x, e.y, radius * 1.3, 0, Math.PI * 2); c.stroke();
+
+                // Dark smoke cap after the flash.
+                if (t > 0.28) {
+                    const smokeAlpha = Math.min(0.38, (t - 0.28) * 0.55) * (1 - t);
+                    c.fillStyle = `rgba(30,30,35,${smokeAlpha})`;
+                    for (let k = 0; k < 6; k++) {
+                        const sx = e.x + Math.sin(e.age * 0.18 + k) * 14 + (k - 2.5) * 8;
+                        const sy = e.y - 18 - t * 35 - k * 4;
+                        const sr = 7 + k * 2 + t * 8;
+                        c.beginPath(); c.arc(sx, sy, sr, 0, Math.PI * 2); c.fill();
+                    }
+                }
+                c.restore();
+            }
+        }
+
         function updateAndDrawParticles(c) {
+            updateAndDrawExplosionEffects(c);
             for(let i = particles.length - 1; i >= 0; i--) {
                 let p = particles[i];
                 p.x += p.vx; p.y += p.vy;
+                p.vy += 0.03;
+                p.vx *= 0.992; p.vy *= 0.992;
                 p.life -= 0.02;
                 if(p.life <= 0) { particles.splice(i, 1); continue; }
                 c.globalAlpha = p.life;
@@ -361,7 +863,7 @@
             
             // Shoulders / Uniform
             c.fillStyle = '#1e3a8a';
-            c.beginPath(); c.roundRect(-100, 50, 200, 150, [40, 40, 0, 0]); c.fill();
+            c.beginPath(); c.roundRect(-145, 70, 290, 195, [55, 55, 0, 0]); c.fill();
             
             // Epaulets (Gold)
             c.fillStyle = '#eab308';
@@ -374,20 +876,20 @@
 
             // Fat Face
             c.fillStyle = '#fca5a5';
-            c.beginPath(); c.ellipse(0, 0, 50, 60, 0, 0, Math.PI*2); c.fill();
+            c.beginPath(); c.ellipse(0, 0, 76, 82, 0, 0, Math.PI*2); c.fill();
             // Double chin
-            c.beginPath(); c.ellipse(0, 45, 40, 20, 0, 0, Math.PI*2); c.fill();
+            c.beginPath(); c.ellipse(0, 68, 64, 30, 0, 0, Math.PI*2); c.fill();
 
             // Angry Eyes
             c.lineWidth = 4; c.strokeStyle = '#450a0a';
-            c.beginPath(); c.moveTo(-35, -15); c.lineTo(-10, -5); c.stroke();
-            c.beginPath(); c.moveTo(35, -15); c.lineTo(10, -5); c.stroke();
-            c.fillStyle = '#fff'; c.beginPath(); c.arc(-20, 0, 8, 0, Math.PI*2); c.arc(20, 0, 8, 0, Math.PI*2); c.fill();
-            c.fillStyle = '#000'; c.beginPath(); c.arc(-20, 0, 3, 0, Math.PI*2); c.arc(20, 0, 3, 0, Math.PI*2); c.fill();
+            c.beginPath(); c.moveTo(-52, -22); c.lineTo(-15, -8); c.stroke();
+            c.beginPath(); c.moveTo(52, -22); c.lineTo(15, -8); c.stroke();
+            c.fillStyle = '#fff'; c.beginPath(); c.arc(-30, 0, 11, 0, Math.PI*2); c.arc(30, 0, 11, 0, Math.PI*2); c.fill();
+            c.fillStyle = '#000'; c.beginPath(); c.arc(-30, 0, 4, 0, Math.PI*2); c.arc(30, 0, 4, 0, Math.PI*2); c.fill();
 
             // Mustache
             c.fillStyle = '#450a0a';
-            c.beginPath(); c.ellipse(0, 25, 25, 10, 0, 0, Math.PI); c.fill();
+            c.beginPath(); c.ellipse(0, 34, 34, 13, 0, 0, Math.PI); c.fill();
 
             // Cap (Фуражка)
             c.fillStyle = '#1e3a8a';
@@ -396,38 +898,121 @@
             c.fillStyle = '#111'; c.beginPath(); c.ellipse(0, -40, 60, 15, 0, 0, Math.PI); c.fill(); // Visor
             // Gold Star
             c.fillStyle = '#eab308';
-            c.font = '20px Arial'; c.textAlign = 'center'; c.textBaseline = 'middle';
+            c.font = '28px Arial'; c.textAlign = 'center'; c.textBaseline = 'middle';
             c.fillText('★', 0, -45);
 
             c.restore();
         }
 
+        function drawAldonMenuFace(c, x, y, size = 150) {
+            c.save(); c.translate(x, y);
+            // shoulders
+            c.fillStyle = '#2563eb';
+            c.beginPath(); c.roundRect(-size*0.40, size*0.18, size*0.80, size*0.42, 24); c.fill();
+            // neck
+            c.fillStyle = '#f0c090'; c.fillRect(-size*0.10, size*0.02, size*0.20, size*0.20);
+            // head
+            c.fillStyle = '#f0c090';
+            c.beginPath(); c.roundRect(-size*0.28, -size*0.36, size*0.56, size*0.46, 22); c.fill();
+            // hair
+            c.fillStyle = '#1e1b18';
+            c.beginPath(); c.roundRect(-size*0.30, -size*0.45, size*0.60, size*0.18, [20,20,5,5]); c.fill();
+            // brows
+            c.strokeStyle = '#0f172a'; c.lineWidth = Math.max(3, size*0.028);
+            c.beginPath(); c.moveTo(-size*0.21,-size*0.14); c.lineTo(-size*0.05,-size*0.09); c.stroke();
+            c.beginPath(); c.moveTo(size*0.21,-size*0.14); c.lineTo(size*0.05,-size*0.09); c.stroke();
+            // eyes
+            c.fillStyle = '#2563eb';
+            c.beginPath(); c.arc(-size*0.11,-size*0.08,size*0.035,0,Math.PI*2); c.arc(size*0.11,-size*0.08,size*0.035,0,Math.PI*2); c.fill();
+            // crooked grin
+            c.strokeStyle = '#7f1d1d'; c.lineWidth = Math.max(2, size*0.018);
+            c.beginPath(); c.arc(0,size*0.10,size*0.08,Math.PI,Math.PI*2); c.stroke();
+            c.restore();
+        }
+
+        function drawIlyaMenuFace(c, x, y, size = 150) {
+            c.save(); c.translate(x, y);
+            // shoulders
+            c.fillStyle = '#dc2626';
+            c.beginPath(); c.roundRect(-size*0.44, size*0.18, size*0.88, size*0.44, 28); c.fill();
+            // neck
+            c.fillStyle = '#f5c89c'; c.fillRect(-size*0.15, size*0.02, size*0.30, size*0.20);
+            // bald head
+            c.fillStyle = '#f5c89c';
+            c.beginPath(); c.arc(0, -size*0.20, size*0.30, 0, Math.PI*2); c.fill();
+            // shine
+            c.fillStyle = 'rgba(255,255,255,0.75)';
+            c.beginPath(); c.ellipse(-size*0.12,-size*0.34,size*0.11,size*0.045,-Math.PI/4,0,Math.PI*2); c.fill();
+            // ears
+            c.fillStyle = '#e8b589';
+            c.beginPath(); c.arc(-size*0.30,-size*0.18,size*0.07,0,Math.PI*2); c.arc(size*0.30,-size*0.18,size*0.07,0,Math.PI*2); c.fill();
+            // smile
+            c.fillStyle = '#fff';
+            c.beginPath(); c.arc(0,-size*0.12,size*0.15,0,Math.PI); c.fill();
+            c.strokeStyle = '#991b1b'; c.lineWidth = 2; c.stroke();
+            // eyes
+            c.fillStyle = '#1e293b';
+            c.beginPath(); c.arc(-size*0.11,-size*0.22,size*0.035,0,Math.PI*2); c.arc(size*0.11,-size*0.22,size*0.035,0,Math.PI*2); c.fill();
+            c.restore();
+        }
+
         function showMenu() {
             gameState = 'MENU';
+            stopEngineSound();
+            stopAllOneShotAudio();
             hudOverlay.classList.add('hidden');
+            stopBGM();
+            playBGM('menu');
 
             showUI(`
-                <div class="text-center w-full max-w-lg glass-panel p-6 sm:p-8 rounded-3xl border border-blue-500/30 neon-border-blue relative overflow-hidden">
-                    <div class="absolute -top-10 -right-10 w-32 h-32 bg-blue-500/20 rounded-full blur-3xl"></div>
-                    <div class="absolute -bottom-10 -left-10 w-32 h-32 bg-red-500/20 rounded-full blur-3xl"></div>
-                    
-                    <h2 class="text-2xl sm:text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-yellow-300 via-yellow-500 to-orange-500 mb-4 neon-text-yellow drop-shadow-md">
-                        ВЬЕТНАМСКИЙ ДРИФТ
-                    </h2>
-                    
-                    <p class="text-sm text-slate-200 mb-8 font-medium leading-relaxed drop-shadow">
-                        Пройди путь от Альметьевска до Нячанга! Уклоняйся от дронов, обмани майора на границе, поймай кумыс и выживи во вьетнамском трафике, чтобы поздравить Жоника!
-                    </p>
+                <div class="w-full max-w-4xl glass-panel p-4 sm:p-6 rounded-3xl border border-blue-500/30 neon-border-blue relative overflow-hidden">
+                    <div class="absolute -top-24 -right-20 w-72 h-72 bg-blue-500/20 rounded-full blur-3xl"></div>
+                    <div class="absolute -bottom-24 -left-20 w-72 h-72 bg-red-500/20 rounded-full blur-3xl"></div>
 
-                    <button onclick="startLevel1()" class="btn-glow w-full py-4 sm:py-5 bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 text-white font-extrabold text-sm sm:text-base rounded-2xl shadow-[0_0_20px_rgba(59,130,246,0.6)] transform hover:-translate-y-1 transition-all duration-200 pixel-font tracking-wide uppercase">
-                        Начать Квест 🚀
-                    </button>
+                    <div class="grid grid-cols-2 gap-3 sm:gap-6 mb-4">
+                        <div class="text-center">
+                            <div class="mx-auto max-w-[260px] h-[180px] sm:h-[220px] rounded-2xl bg-slate-950/60 border border-blue-500/30 flex items-center justify-center overflow-hidden">
+                                <canvas id="aldonMenuPreview" width="260" height="220" class="w-full h-full"></canvas>
+                            </div>
+                            <div class="text-xs sm:text-sm text-blue-300 font-black mt-2 tracking-wide">АЛДОН — БЕРСЕРК</div>
+                        </div>
+                        <div class="text-center">
+                            <div class="mx-auto max-w-[260px] h-[180px] sm:h-[220px] rounded-2xl bg-slate-950/60 border border-red-500/30 flex items-center justify-center overflow-hidden">
+                                <canvas id="ilyaMenuPreview" width="260" height="220" class="w-full h-full"></canvas>
+                            </div>
+                            <div class="text-xs sm:text-sm text-red-300 font-black mt-2 tracking-wide">ИЛЬЯ — ЛЫСЫЙ БРАТ</div>
+                        </div>
+                    </div>
 
-                    <div class="mt-6 flex justify-center gap-4 text-xs font-bold text-slate-400 uppercase tracking-wider">
-                        <span>Стрелки Влево/Вправо</span> <span class="text-slate-600">•</span> <span>Тапы на экране</span>
+                    <div class="text-center">
+                        <h2 class="text-2xl sm:text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-yellow-300 via-yellow-500 to-orange-500 mb-2 neon-text-yellow">
+                            АЛДОН: ПУТЬ В НЯЧАНГ
+                        </h2>
+                        <p class="text-xs sm:text-sm text-slate-200 mb-4 leading-relaxed">
+                            Альметьевск → Казань → Алматы → Нячанг. Дроны, майор, таксисты, трафик и Жоник в конце этого цирка.
+                        </p>
+
+                        <button onclick="primeAudioFromUserGesture(); playBGM('menu');" class="w-full py-3 mb-3 bg-slate-800 hover:bg-slate-700 text-yellow-300 font-extrabold text-xs sm:text-sm rounded-2xl border border-yellow-500/40 transition-all pixel-font tracking-wide uppercase">
+                            🔊 ВКЛЮЧИТЬ МУЗЫКУ МЕНЮ
+                        </button>
+
+                        <button onclick="primeAudioFromUserGesture(); startLevel1();" class="btn-glow w-full py-4 sm:py-5 bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 text-white font-extrabold text-sm sm:text-lg rounded-2xl shadow-[0_0_20px_rgba(59,130,246,0.6)] transform hover:-translate-y-1 transition-all duration-200 pixel-font tracking-wide uppercase">
+                            🚀 НАЧАТЬ ПРИКЛЮЧЕНИЕ
+                        </button>
+
+                        <div class="mt-3 text-[10px] sm:text-xs font-bold text-slate-400 uppercase tracking-wider">
+                            Стрелки влево/вправо · A/D · мышь / тап
+                        </div>
                     </div>
                 </div>
             `);
+
+            setTimeout(() => {
+                const a = document.getElementById('aldonMenuPreview');
+                const i = document.getElementById('ilyaMenuPreview');
+                if (a) drawAldonMenuFace(a.getContext('2d'), 130, 105, 180);
+                if (i) drawIlyaMenuFace(i.getContext('2d'), 130, 105, 180);
+            }, 0);
         }
 
         let lvl1Player = { x: 450, y: 440, speed: 7 };
@@ -439,8 +1024,11 @@
         function startLevel1() {
             gameState = 'LVL1';
             score = 0; hp = 100; lvl1Distance = 0;
+            stopAllOneShotAudio();
+            playBGM('lvl1');
             lvl1Player.x = canvas.width / 2;
-            lvl1Obstacles = []; lvl1Items = []; particles = [];
+            startEngineSound();
+            lvl1Obstacles = []; lvl1Items = []; particles = []; explosionEffects = [];
 
             hideUI();
             hudOverlay.classList.remove('hidden');
@@ -452,6 +1040,7 @@
             if (gameState !== 'LVL1') return;
             lvl1Distance += 4;
             updateHUD('1. Трасса М-7', true);
+            updateEngineSound();
             
             // Exhaust
             if (Math.random() < 0.7) spawnParticles(lvl1Player.x - 10, lvl1Player.y + 60, '#64748b', 1, 1, 5);
@@ -461,8 +1050,8 @@
             if (keys.Right && lvl1Player.x < canvas.width - 200) lvl1Player.x += lvl1Player.speed;
 
             // Spawn Obstacles (Trucks & Drones)
-            if (Math.random() < 0.05) {
-                const type = Math.random() < 0.6 ? 'truck' : 'drone';
+            if (Math.random() < 0.033) {
+                const type = Math.random() < 0.38 ? 'truck' : 'drone';
                 lvl1Obstacles.push({
                     x: 220 + Math.random() * (canvas.width - 440),
                     y: -100, type: type, speed: type === 'drone' ? 8 : 2 + Math.random() * 2
@@ -480,17 +1069,22 @@
                 ob.y += ob.speed;
                 
                 // Truck Smoke
-                if (ob.type === 'truck' && Math.random() < 0.8) spawnParticles(ob.x, ob.y + 40, '#1e293b', 2, 2, 8);
+                if (ob.type === 'truck' && Math.random() < 0.24) spawnParticles(ob.x, ob.y + 40, '#1e293b', 1, 1.1, 5);
+                if (ob.type === 'drone' && Math.random() < 0.20) {
+                    spawnParticles(ob.x - 22, ob.y + 8, '#64748b', 1, 0.8, 3.5);
+                }
 
                 let hitW = ob.type === 'truck' ? 50 : 60; // wider hitbox for wings
                 let hitH = ob.type === 'truck' ? 100 : 30;
 
                 if (Math.abs(ob.x - lvl1Player.x) < (hitW/2 + 35) && Math.abs(ob.y - lvl1Player.y) < (hitH/2 + 60)) {
                     hp -= (ob.type === 'truck' ? 25 : 35);
-                    triggerScreenShake(); playSynthSound('hit');
-                    spawnParticles(lvl1Player.x, lvl1Player.y - 40, '#ef4444', 25, 5, 6);
+                    triggerScreenShake();
+                    // Same physical crash sound for both drones and KamAZ trucks.
+                    playCustomSfx('droneExplode');
+                    spawnExplosion(lvl1Player.x, lvl1Player.y - 40, 1.18);
                     lvl1Obstacles.splice(i, 1);
-                    if (hp <= 0) { gameOver('Калина разбита! Авиабилеты сгорели.'); return; }
+                    if (hp <= 0) { gameOver('Калина разбита! Авиабилеты сгорели.', 'lvl1Fail'); return; }
                     continue;
                 }
                 if (ob.y > canvas.height + 150) lvl1Obstacles.splice(i, 1);
@@ -502,16 +1096,18 @@
                 it.y += it.speed;
                 if (Math.abs(it.x - lvl1Player.x) < 40 && Math.abs(it.y - lvl1Player.y) < 60) {
                     score += 200;
-                    hp = Math.min(100, hp + 10);
-                    playSynthSound('eat');
-                    spawnParticles(it.x, it.y, '#10b981', 15, 4, 5); // Green sparks
+                    hp = Math.min(100, hp + 15);
+                    // Gasoline is a refuel item — never reuse the food sound.
+                    playGasolinePickup();
+                    spawnParticles(it.x, it.y, '#fbbf24', 10, 4, 3);
+                    spawnParticles(it.x, it.y, '#fef3c7', 6, 3, 2); // Refuel sparks
                     lvl1Items.splice(i, 1);
                     continue;
                 }
                 if (it.y > canvas.height + 50) lvl1Items.splice(i, 1);
             }
 
-            if (lvl1Distance >= LVL1_GOAL) { showLevel2Intro(); return; }
+            if (lvl1Distance >= LVL1_GOAL) { stopEngineSound(); showLevel2Intro(); return; }
 
             // Render Background
             ctx.fillStyle = '#064e3b'; ctx.fillRect(0, 0, canvas.width, canvas.height); // Grass
@@ -610,7 +1206,7 @@
             },
             {
                 officer: "А этот лысый здоровый? Почему от его головы отражается свет прожектора мне прямо в глаз?!",
-                thought: "(Илья отвечает ослепительной широкой улыбкой)",
+                thought: "(Алдон кивает на Илью: «Это мой штурман. Без него машина не едет!»)",
                 opts: [
                     { t: "Это мой штурман Илья! Без него машина не едет!", s: -10 },
                     { t: "Он просто сильно нервничает и потеет, отпустите!", s: 35 }
@@ -619,7 +1215,7 @@
         ];
 
         function showLevel2Intro() {
-            gameState = 'TRANSITION'; cancelAnimationFrame(animationFrameId);
+            gameState = 'TRANSITION'; cancelAnimationFrame(animationFrameId); stopEngineSound();
             showUI(`
                 <div class="text-center w-full max-w-lg glass-panel p-6 sm:p-8 rounded-3xl border border-red-500/50 neon-border-red">
                     <h2 class="text-2xl font-black text-red-400 mb-2 pixel-font">УРОВЕНЬ 2</h2>
@@ -632,6 +1228,7 @@
 
         function startLevel2() {
             gameState = 'LVL2'; lvl2Suspicion = 0; lvl2Step = 0;
+            playBGM('lvl2');
             updateHUD('2. Паспортный контроль', false); // Hide HP
             renderLevel2Step();
         }
@@ -643,41 +1240,43 @@
                 return;
             }
 
-            // Draw Background and Major on Canvas
-            ctx.fillStyle = '#0f172a'; ctx.fillRect(0, 0, canvas.width, canvas.height); // Wall
-            ctx.fillStyle = '#1e293b'; ctx.fillRect(0, canvas.height - 150, canvas.width, 150); // Desk
-            
-            // Draw Major Petrenko
-            drawMajorPetrenko(ctx, canvas.width / 2, canvas.height - 150);
+            ctx.fillStyle = '#0f172a'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = '#1e293b'; ctx.fillRect(0, canvas.height - 120, canvas.width, 120);
+            ctx.fillStyle = '#334155'; ctx.fillRect(0, canvas.height - 135, canvas.width, 15);
+
+            // Put the absurdly large Petrenko to the right of the dialogue, not behind it.
+            drawMajorPetrenko(ctx, canvas.width - 180, 92);
 
             const q = lvl2Questions[lvl2Step];
             showUI(`
-                <div class="w-full max-w-2xl glass-panel border border-slate-600 p-4 sm:p-6 rounded-2xl shadow-2xl flex flex-col gap-4 mt-auto mb-4 pointer-events-auto">
-                    <div class="flex justify-between items-center border-b border-slate-700 pb-2">
-                        <span class="font-black text-red-400 text-sm tracking-wide uppercase">🛂 Майор Петренко</span>
-                        <div class="flex items-center gap-2">
-                            <span class="text-[10px] text-slate-400 font-bold uppercase">Подозрение:</span>
-                            <div class="w-24 sm:w-32 bg-slate-900 h-3 rounded-full border border-slate-700 overflow-hidden">
-                                <div class="bg-red-600 h-full transition-all duration-300" style="width: ${lvl2Suspicion}%"></div>
+                <div class="lvl2-panel absolute left-2 sm:left-3 right-auto bottom-2 sm:bottom-3 pointer-events-auto">
+                    <div class="glass-panel border border-slate-600 rounded-2xl shadow-2xl p-3 sm:p-4 flex flex-col gap-2 bg-slate-950/95">
+                        <div class="flex justify-between items-center border-b border-slate-700 pb-2">
+                            <span class="font-black text-red-400 text-xs sm:text-sm tracking-wide uppercase">🛂 Майор Петренко</span>
+                            <div class="flex items-center gap-2">
+                                <span class="text-[9px] sm:text-[10px] text-slate-400 font-bold uppercase">Подозрение:</span>
+                                <div class="w-20 sm:w-28 bg-slate-900 h-3 rounded-full border border-slate-700 overflow-hidden">
+                                    <div class="bg-red-600 h-full transition-all duration-300" style="width: ${lvl2Suspicion}%"></div>
+                                </div>
+                                <span class="font-bold text-[10px] sm:text-xs text-red-400">${lvl2Suspicion}%</span>
                             </div>
-                            <span class="font-bold text-xs text-red-400">${lvl2Suspicion}%</span>
                         </div>
-                    </div>
 
-                    <div class="bg-slate-900/80 p-4 rounded-xl border border-slate-700 relative speech-bubble shadow-inner">
-                        <p class="text-white text-sm leading-relaxed font-medium">"${q.officer}"</p>
-                    </div>
+                        <div class="bg-slate-900/90 px-3 py-2 rounded-xl border border-slate-700 relative speech-bubble shadow-inner">
+                            <p class="text-white text-[11px] sm:text-xs leading-snug font-medium">"${q.officer}"</p>
+                        </div>
 
-                    <p class="text-xs italic text-blue-300 bg-blue-900/30 p-2 rounded-lg border border-blue-500/20">
-                        💭 ${q.thought}
-                    </p>
+                        <p class="text-[10px] sm:text-[11px] italic text-blue-300 bg-blue-900/30 px-2 py-1.5 rounded-lg border border-blue-500/20">
+                            💭 ${q.thought}
+                        </p>
 
-                    <div class="space-y-2 mt-2">
-                        ${q.opts.map((opt, idx) => `
-                            <button onclick="answerLevel2(${idx})" class="w-full text-left p-3 sm:p-4 bg-slate-800/80 hover:bg-slate-700 border border-slate-600 hover:border-blue-400 rounded-xl text-xs sm:text-sm text-slate-200 transition-all font-medium">
-                                🔹 ${opt.t}
-                            </button>
-                        `).join('')}
+                        <div class="grid grid-cols-1 gap-1.5">
+                            ${q.opts.map((opt, idx) => `
+                                <button onclick="answerLevel2(${idx}); primeAudioFromUserGesture();" class="w-full text-left px-2.5 py-2 bg-slate-800/90 hover:bg-slate-700 border border-slate-600 hover:border-blue-400 rounded-lg text-[10px] sm:text-xs text-slate-200 transition-all font-medium">
+                                    🔹 ${opt.t}
+                                </button>
+                            `).join('')}
+                        </div>
                     </div>
                 </div>
             `, false);
@@ -686,9 +1285,10 @@
         function answerLevel2(optIdx) {
             const opt = lvl2Questions[lvl2Step].opts[optIdx];
             lvl2Suspicion = Math.max(0, lvl2Suspicion + opt.s);
-            
+            if (opt.s > 0) playCustomSfx('wrong');
+
             if (lvl2Suspicion >= 100) {
-                playSynthSound('denied');
+                playCustomSfx('denied');
                 gameOver('Майор Петренко заподозрил неладное! Вас сняли с рейса.'); return;
             }
             lvl2Step++; renderLevel2Step();
@@ -698,11 +1298,12 @@
 
         function startFlightCutscene() {
             gameState = 'CUTSCENE'; cutscenePlaneX = -200;
+            playBGM('flight');
             showUI(`
                 <div class="text-center w-full max-w-md glass-panel p-6 rounded-3xl border border-sky-500/50 mt-[10%]">
                     <h3 class="text-xl font-bold text-sky-400 mb-2 uppercase tracking-widest">✈️ Рейс Казань — Алматы</h3>
                     <p class="text-sm text-slate-300 mb-6">Граница РФ пройдена! Курс на перевалочный пункт.</p>
-                    <button onclick="showLevel3Intro()" class="btn-glow w-full py-4 bg-sky-600 hover:bg-sky-500 font-bold text-white rounded-xl shadow-lg uppercase text-sm">Продолжить ▶</button>
+                    <button onclick="showLevel3Intro()" class="pointer-events-auto btn-glow w-full py-4 bg-sky-600 hover:bg-sky-500 font-bold text-white rounded-xl shadow-lg uppercase text-sm">Продолжить ▶</button>
                 </div>
             `, false);
             runCutsceneLoop();
@@ -725,10 +1326,16 @@
             // Proper Airplane Vector
             ctx.save(); ctx.translate(cutscenePlaneX, 250);
             
-            // Jet trails
-            ctx.fillStyle = 'rgba(255,255,255,0.4)';
-            ctx.beginPath(); ctx.ellipse(-150, -10, 40, 4, 0, 0, Math.PI*2); ctx.fill();
-            ctx.beginPath(); ctx.ellipse(-150, 10, 40, 4, 0, 0, Math.PI*2); ctx.fill();
+            // Exhaust smoke / contrail behind the aircraft.
+            for (let i = 0; i < 9; i++) {
+                const tx = -130 - i * 22;
+                const alpha = 0.28 - i * 0.022;
+                const size = 4 + i * 1.3;
+                ctx.fillStyle = `rgba(248,250,252,${Math.max(0.05, alpha)})`;
+                ctx.beginPath();
+                ctx.ellipse(tx, Math.sin(Date.now()/260 + i) * 4 + (i % 2 ? -8 : 8), size * 1.8, size, 0, 0, Math.PI*2);
+                ctx.fill();
+            }
 
             // Main fuselage
             ctx.fillStyle = '#f8fafc';
@@ -770,14 +1377,32 @@
         let lvl3Items = [];
         let lvl3Timer = 25;
         let lvl3Interval = null;
+        const KZ_TAXI_LINES = [
+            'Эй брат, поедем за триста!',
+            'Братан, садись, быстро довезу!',
+            'Эй, куда тебе? Доедем за триста!',
+            'Брат, не стой, аэропорт недорого!',
+            'Садись, брат, такси прямо сейчас!',
+            'Эй брат, машина свободна, поехали!',
+            'Брат, центр? Сейчас довезу, садись!',
+            'Эй, уважаемый, куда едем?',
+            'Брат, не ходи пешком, садись ко мне!',
+            'Аэропорт? Договоримся на месте!',
+            'Эй брат, последний свободный! Поехали!',
+            'Брат, быстро-быстро, пока цена хорошая!',
+            'Куда направляешься? Я всё покажу!',
+            'Садись, брат, без пробок довезу!'
+        ];
+        let lastTaxiVoiceAt = 0;
 
         function showLevel3Intro() {
+            stopAllOneShotAudio();
             gameState = 'TRANSITION'; cancelAnimationFrame(animationFrameId);
             showUI(`
                 <div class="text-center w-full max-w-lg glass-panel p-6 sm:p-8 rounded-3xl border border-green-500/50 neon-border-green">
                     <h2 class="text-2xl font-black text-green-400 mb-2 pixel-font">УРОВЕНЬ 3</h2>
                     <h3 class="text-lg font-bold text-white mb-4">Зеленый Базар Алматы</h3>
-                    <p class="text-sm text-slate-300 mb-6">Лови на поднос казы (🥩), беш (🥟) и кумыс (🥛). Уклоняйся от ушлых таксистов (🚕)! Нужно 1500 очков.</p>
+                    <p class="text-sm text-slate-300 mb-6">Лови на поднос казы, бешбармак и кумыс. Уклоняйся от самоуверенных казахских таксистов! Нужно 1500 очков.</p>
                     <button onclick="startLevel3()" class="btn-glow w-full py-4 bg-green-600 hover:bg-green-500 text-white font-extrabold rounded-xl shadow-lg pixel-font uppercase">Выйти на базар</button>
                 </div>
             `);
@@ -785,6 +1410,7 @@
 
         function startLevel3() {
             gameState = 'LVL3'; lvl3PlayerX = canvas.width / 2; lvl3Items = []; lvl3Timer = 25;
+            playBGM('lvl3');
             updateHUD(`3. Алматы (${lvl3Timer}с)`, true);
             hideUI();
             
@@ -795,11 +1421,28 @@
                     if (lvl3Timer <= 0) {
                         clearInterval(lvl3Interval);
                         if (score >= 1500) showLevel4Intro();
-                        else gameOver('Не хватило очков на билеты до Вьетнама! (Нужно 1500)');
+                        else gameOver('Не хватило очков на билеты до Вьетнама! (Нужно 1500)', 'lvl3Fail');
                     }
                 }
             }, 1000);
             runLevel3Loop();
+        }
+
+        function drawKazakhTaxiDriver(c, x, y) {
+            c.save(); c.translate(x, y);
+            c.shadowColor = 'rgba(0,0,0,0.45)'; c.shadowBlur = 6; c.shadowOffsetY = 5;
+            // Caricatured person: wide shoulders, expressive eyes, cap, moustache.
+            c.fillStyle = '#1d4ed8'; c.beginPath(); c.roundRect(-18, 0, 36, 34, 8); c.fill();
+            c.fillStyle = '#f0bf91'; c.beginPath(); c.ellipse(0, -9, 17, 19, 0, 0, Math.PI * 2); c.fill();
+            c.fillStyle = '#b45309'; c.beginPath(); c.arc(0, -22, 17, Math.PI, 0); c.fill();
+            c.strokeStyle = '#111827'; c.lineWidth = 3;
+            // Narrow, calculating eyes.
+            c.beginPath(); c.moveTo(-12, -10); c.lineTo(-2, -8); c.stroke();
+            c.beginPath(); c.moveTo(2, -8); c.lineTo(12, -10); c.stroke();
+            c.fillStyle = '#111827'; c.beginPath(); c.arc(-6, -9, 1.8, 0, Math.PI*2); c.arc(6, -9, 1.8, 0, Math.PI*2); c.fill();
+            // Thin sly grin.
+            c.beginPath(); c.arc(0, 0, 7, 0.10, Math.PI - 0.10); c.stroke();
+            c.shadowBlur = 0; c.restore();
         }
 
         function runLevel3Loop() {
@@ -809,24 +1452,50 @@
             if (keys.Right && lvl3PlayerX < canvas.width - 60) lvl3PlayerX += 10;
 
             if (Math.random() < 0.08) {
-                const types = [{e:'🥟', pts:150}, {e:'🥩', pts:200}, {e:'🥛', pts:300}, {e:'🚕', pts:-200}];
+                const types = [
+                    {e:'🥟', pts:150, kind:'food'}, {e:'🥩', pts:200, kind:'food'}, {e:'🥛', pts:300, kind:'kumis'},
+                    {e:'npc', pts:-200, kind:'taxi'}, {e:'npc', pts:-200, kind:'taxi'},
+                    {e:'npc', pts:-200, kind:'taxi'},
+                    {e:'🥟', pts:150, kind:'food'}, {e:'🥩', pts:200, kind:'food'}, {e:'🥛', pts:300, kind:'kumis'}
+                ];
                 const sel = types[Math.floor(Math.random() * types.length)];
-                lvl3Items.push({ x: 50 + Math.random()*(canvas.width - 100), y: -50, type: sel, speed: 4 + Math.random()*3 });
+                const itemSpeed = sel.kind === 'taxi' ? (2.1 + Math.random()*1.1) : (3.6 + Math.random()*1.8);
+                lvl3Items.push({ x: 50 + Math.random()*(canvas.width - 100), y: -50, type: sel, speed: itemSpeed });
             }
 
             for (let i = lvl3Items.length - 1; i >= 0; i--) {
                 let it = lvl3Items[i];
                 it.y += it.speed;
 
+                if (it.type.kind === 'taxi' && it.y > 70 && it.y < 190 && Date.now() - lastTaxiVoiceAt > 2300) {
+                    lastTaxiVoiceAt = Date.now();
+                    let lineIdx = Math.floor(Math.random() * KZ_TAXI_LINES.length);
+                    if (lineIdx === window.__lastTaxiLine) lineIdx = (lineIdx + 1 + Math.floor(Math.random() * (KZ_TAXI_LINES.length - 1))) % KZ_TAXI_LINES.length;
+                    window.__lastTaxiLine = lineIdx;
+                    playVoiceLine(KZ_TAXI_LINES[lineIdx], 0, 1.15);
+                    if (Math.random() < 0.65) {
+                        let line2Idx = Math.floor(Math.random() * KZ_TAXI_LINES.length);
+                        if (line2Idx === lineIdx) line2Idx = (line2Idx + 1) % KZ_TAXI_LINES.length;
+                        // speechSynthesis queues utterances; this intentionally keeps the second
+                        // scammer in the queue rather than dropping the line.
+                        playVoiceLine(KZ_TAXI_LINES[line2Idx], 60, 1.15);
+                    }
+                }
+
                 // Hitbox tray
                 if (Math.abs(it.x - lvl3PlayerX) < 50 && Math.abs(it.y - (canvas.height - 110)) < 20) {
                     if (it.type.pts > 0) {
-                        score += it.type.pts; playSynthSound('eat');
+                        score += it.type.pts;
+                        if (it.type.kind === 'kumis') {
+                            playCustomSfx('kumis', 'Ааааххх!', 1.15);
+                        } else {
+                            playCustomSfx('foodCatch', 'Хрусть!', 1.15);
+                        }
                         hp = Math.min(100, hp + 5);
                         spawnParticles(lvl3PlayerX, canvas.height - 110, '#fef08a', 15, 4, 4);
                     } else {
                         score = Math.max(0, score + it.type.pts); hp -= 25;
-                        triggerScreenShake(); playSynthSound('hit');
+                        triggerScreenShake(); playCustomSfx('scooterCrash');
                         spawnParticles(lvl3PlayerX, canvas.height - 110, '#ef4444', 20, 5, 5);
                         if(hp <= 0) { clearInterval(lvl3Interval); gameOver('Таксисты Алматы забрали последнее здоровье и тенге!'); return; }
                     }
@@ -860,14 +1529,17 @@
             ctx.fillRect(-60, -15, 120, 10);
             ctx.restore();
 
-            // Draw Items (Emojis)
-            ctx.font = '40px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            // Draw food and caricature taxi drivers instead of taxi emojis.
             lvl3Items.forEach(it => {
                 ctx.save(); ctx.translate(it.x, it.y);
-                ctx.rotate(Math.sin(it.y / 30) * 0.2);
-                // Text shadow for pop
-                ctx.shadowColor = 'rgba(0,0,0,0.5)'; ctx.shadowBlur = 5; ctx.shadowOffsetY = 3;
-                ctx.fillText(it.type.e, 0, 0);
+                if (it.type.kind === 'taxi') {
+                    drawKazakhTaxiDriver(ctx, 0, 0);
+                } else {
+                    ctx.font = '40px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+                    ctx.rotate(Math.sin(it.y / 30) * 0.2);
+                    ctx.shadowColor = 'rgba(0,0,0,0.5)'; ctx.shadowBlur = 5; ctx.shadowOffsetY = 3;
+                    ctx.fillText(it.type.e, 0, 0);
+                }
                 ctx.restore();
             });
 
@@ -878,9 +1550,10 @@
         let lvl4Scooter = { x: 450, y: 400 };
         let lvl4NPCs = [];
         let lvl4Distance = 0;
-        const LVL4_GOAL = 2500;
+        const LVL4_GOAL = 4650;
 
         function showLevel4Intro() {
+            stopAllOneShotAudio();
             gameState = 'TRANSITION'; cancelAnimationFrame(animationFrameId);
             showUI(`
                 <div class="text-center w-full max-w-lg glass-panel p-6 sm:p-8 rounded-3xl border border-yellow-500/50 neon-border-yellow">
@@ -894,42 +1567,48 @@
 
         function startLevel4() {
             gameState = 'LVL4'; score += 500; hp = 100; lvl4Distance = 0;
-            lvl4Scooter.x = canvas.width / 2; lvl4NPCs = []; particles = [];
+            playBGM('lvl4');
+            lvl4Scooter.x = canvas.width / 2; lvl4NPCs = []; particles = []; explosionEffects = [];
             updateHUD('4. Трафик Нячанга', true);
             hideUI(); runLevel4Loop();
         }
 
-        function drawVietnamScooter(c, x, y, isPlayer, type) {
+        function drawVietnamScooter(c, x, y, isPlayer, type, dir = 1) {
             c.save(); c.translate(x, y);
-            c.shadowColor = 'rgba(0,0,0,0.5)'; c.shadowBlur = 10; c.shadowOffsetY = 10;
-            
+            c.shadowColor = 'rgba(0,0,0,0.35)'; c.shadowBlur = 8; c.shadowOffsetY = 6;
+            const flip = dir < 0 ? -1 : 1;
+            c.scale(1, flip);
+
             if (isPlayer) {
-                // Player Yamaha
-                c.fillStyle = '#dc2626'; c.beginPath(); c.roundRect(-15, -35, 30, 70, 10); c.fill();
-                c.fillStyle = '#111'; c.fillRect(-8, -45, 16, 15); c.fillRect(-8, 30, 16, 15); // Wheels
-                c.fillRect(-25, -25, 50, 5); // Handlebars
-                
-                c.shadowColor = 'transparent';
-                // Aldon (Driver)
-                c.fillStyle = '#2563eb'; c.beginPath(); c.arc(0, -10, 16, 0, Math.PI*2); c.fill(); // Body
-                c.fillStyle = '#1e1b18'; c.beginPath(); c.arc(0, -10, 12, 0, Math.PI*2); c.fill(); // Dark Hair Helmet/Head
-                
-                // Ilya (Passenger)
-                c.fillStyle = '#b91c1c'; c.beginPath(); c.arc(0, 15, 18, 0, Math.PI*2); c.fill(); // Body
-                c.fillStyle = '#f5c89c'; c.beginPath(); c.arc(0, 15, 14, 0, Math.PI*2); c.fill(); // Bald head
-                c.fillStyle = 'rgba(255,255,255,0.7)'; c.beginPath(); c.ellipse(-4, 10, 5, 2, -Math.PI/4, 0, Math.PI*2); c.fill(); // Shine
+                c.fillStyle = '#dc2626'; c.beginPath(); c.roundRect(-16, -34, 32, 68, 10); c.fill();
+                c.fillStyle = '#0f172a'; c.fillRect(-10, -47, 8, 16); c.fillRect(2, 31, 8, 16);
+                c.fillStyle = '#111827'; c.fillRect(-25, -25, 50, 5);
+                c.fillStyle = '#2563eb'; c.beginPath(); c.ellipse(0, -11, 15, 18, 0, 0, Math.PI*2); c.fill();
+                c.fillStyle = '#1e1b18'; c.beginPath(); c.arc(0, -22, 11, 0, Math.PI*2); c.fill();
+                c.fillStyle = '#b91c1c'; c.beginPath(); c.ellipse(0, 15, 17, 18, 0, 0, Math.PI*2); c.fill();
+                c.fillStyle = '#f5c89c'; c.beginPath(); c.arc(0, 15, 13, 0, Math.PI*2); c.fill();
+                c.fillStyle = 'rgba(255,255,255,0.7)'; c.beginPath(); c.ellipse(-4, 10, 5, 2, -Math.PI/4, 0, Math.PI*2); c.fill();
+            } else if (type === 'grab') {
+                c.fillStyle = '#16a34a'; c.beginPath(); c.roundRect(-13, -28, 26, 56, 9); c.fill();
+                c.fillStyle = '#22c55e'; c.roundRect(-20, 3, 40, 25, 5); c.fill();
+                c.fillStyle = '#111827'; c.fillRect(-8, -39, 16, 13);
+                c.fillStyle = '#f0bf91'; c.beginPath(); c.arc(0, -15, 10, 0, Math.PI*2); c.fill();
+                c.fillStyle = '#0b0f10'; c.beginPath(); c.arc(0, -21, 10, Math.PI, 0); c.fill();
+            } else if (type === 'banhbao') {
+                // Banh Bao vendor / cart.
+                c.fillStyle = '#a16207'; c.fillRect(-20, 8, 40, 22);
+                c.fillStyle = '#fef3c7'; c.beginPath(); c.arc(-10, -10, 11, 0, Math.PI * 2); c.arc(10, -10, 11, 0, Math.PI * 2); c.fill();
+                c.fillStyle = '#f0bf91'; c.beginPath(); c.arc(0, -28, 11, 0, Math.PI * 2); c.fill();
+                c.fillStyle = '#111827'; c.fillRect(-8, -31, 3, 2); c.fillRect(5, -31, 3, 2);
+                c.fillStyle = '#ef4444'; c.fillRect(-24, -3, 48, 5);
+            } else if (type === 'car') {
+                c.fillStyle = '#e7e5e4'; c.beginPath(); c.roundRect(-22, -34, 44, 68, 8); c.fill();
+                c.fillStyle = '#38bdf8'; c.fillRect(-17, -20, 34, 15); c.fillStyle = '#fbbf24'; c.fillRect(-14, 16, 28, 8);
+                c.fillStyle = '#111827'; c.fillRect(-25, -26, 5, 15); c.fillRect(20, 12, 5, 15);
             } else {
-                // NPC
-                if (type === 'grab') {
-                    c.fillStyle = '#16a34a'; c.beginPath(); c.roundRect(-12, -25, 24, 50, 8); c.fill();
-                    c.fillStyle = '#22c55e'; c.fillRect(-15, 5, 30, 25); // Grab Box
-                    c.shadowColor = 'transparent';
-                    c.fillStyle = '#16a34a'; c.beginPath(); c.arc(0, -5, 12, 0, Math.PI*2); c.fill(); // Driver Helmet
-                } else {
-                    c.fillStyle = '#78716c'; c.beginPath(); c.roundRect(-12, -25, 24, 50, 8); c.fill();
-                    c.fillStyle = '#fef08a'; // Non La Hat
-                    c.beginPath(); c.moveTo(0, -15); c.lineTo(-15, 5); c.lineTo(15, 5); c.closePath(); c.fill();
-                }
+                c.fillStyle = '#7c3aed'; c.beginPath(); c.roundRect(-13, -28, 26, 56, 9); c.fill();
+                c.fillStyle = '#f0bf91'; c.beginPath(); c.arc(0, -15, 10, 0, Math.PI*2); c.fill();
+                c.fillStyle = '#1e293b'; c.beginPath(); c.arc(0, -21, 11, Math.PI, 0); c.fill();
             }
             c.restore();
         }
@@ -945,36 +1624,67 @@
             if (keys.Left && lvl4Scooter.x > 180) lvl4Scooter.x -= 8;
             if (keys.Right && lvl4Scooter.x < canvas.width - 180) lvl4Scooter.x += 8;
 
-            // Spawn NPC Scooters
-            if (Math.random() < 0.06) {
+            // Dense but readable traffic. Many NPCs deliberately cross the center so standing still is no longer a free win.
+            if (Math.random() < 0.0944) {
+                const dir = Math.random() < 0.18 ? -1 : 1;
+                const roll = Math.random();
+                const type = roll < 0.30 ? 'grab' : roll < 0.52 ? 'banhbao' : roll < 0.73 ? 'local' : 'car';
+                const edgeSpawn = Math.random() < 0.35;
+                const x = edgeSpawn ? (Math.random() < 0.5 ? 205 : 695) : 220 + Math.random() * (canvas.width - 440);
+                const crossCenter = Math.random() < 0.55;
+                const targetX = crossCenter
+                    ? (x < canvas.width/2 ? 690 + Math.random()*90 : 120 + Math.random()*90)
+                    : 250 + Math.random() * (canvas.width - 500);
                 lvl4NPCs.push({
-                    x: 180 + Math.random() * (canvas.width - 360),
-                    y: -50, speed: Math.random() < 0.1 ? 9 : 4 + Math.random()*2, // 10% fast chaotic
-                    type: Math.random() < 0.5 ? 'grab' : 'local'
+                    x,
+                    y: dir > 0 ? -70 : canvas.height + 70,
+                    speed: 3.0 + Math.random()*2.4, dir, baseDir: dir, type,
+                    vx: 0, wobble: Math.random() * Math.PI * 2,
+                    targetX,
+                    retargetAt: performance.now() + 1100 + Math.random()*1800,
+                    brake: false, turned: false
                 });
             }
 
-            // Move NPCs
             for (let i = lvl4NPCs.length - 1; i >= 0; i--) {
                 let npc = lvl4NPCs[i];
-                npc.y += npc.speed;
-                if (Math.random() < 0.15) spawnParticles(npc.x + 8, npc.y + 25, '#94a3b8', 1, 0.5, 3);
+                npc.wobble += 0.04;
+                if (performance.now() > npc.retargetAt) {
+                    npc.retargetAt = performance.now() + 1300 + Math.random()*2200;
+                    if (Math.random() < 0.6) npc.targetX = 180 + Math.random() * (canvas.width - 360);
+                }
+                npc.x += Math.max(-2.2, Math.min(2.2, (npc.targetX - npc.x) * 0.018));
+                if (Math.random() < 0.0035 && !npc.turned) { npc.dir *= -1; npc.turned = true; }
+                if (Math.random() < 0.008) npc.brake = !npc.brake;
+                const actualSpeed = npc.brake ? npc.speed * 0.32 : npc.speed;
+                npc.y += actualSpeed * npc.dir;
+                // Keep NPC exhaust visually consistent with Aldon's exhaust.
+                if (Math.random() < 0.08 && npc.type !== 'banhbao') spawnParticles(npc.x + 10, npc.y + (npc.dir > 0 ? 35 : -35), '#94a3b8', 1, 0.7, 3.5);
+                if (npc.type === 'banhbao' && !npc.voicePlayed && ((npc.dir > 0 && npc.y > 40) || (npc.dir < 0 && npc.y < canvas.height - 40))) {
+                    npc.voicePlayed = true;
+                    playCustomSfx('banhBao', 'Бань бао! Горячий бань бао!', 1.15);
+                }
 
-                if (Math.abs(npc.x - lvl4Scooter.x) < 35 && Math.abs(npc.y - lvl4Scooter.y) < 60) {
-                    hp -= 25; triggerScreenShake(); playSynthSound('hit');
+                if (Math.abs(npc.x - lvl4Scooter.x) < (npc.type === 'car' ? 42 : 32) && Math.abs(npc.y - lvl4Scooter.y) < 58) {
+                    hp -= 25; triggerScreenShake(); playCustomSfx('scooterCrash', 'hit');
                     spawnParticles(lvl4Scooter.x, lvl4Scooter.y, '#f59e0b', 20, 5, 5);
                     lvl4NPCs.splice(i, 1);
-                    if (hp <= 0) { gameOver('ДТП во Вьетнаме! Байк разбит, Жоник не дождался.'); return; }
+                    if (hp <= 0) { gameOver('ДТП во Вьетнаме! Байк разбит, Жоник не дождался.', 'lvl4Fail'); return; }
                     continue;
                 }
-                if (npc.y > canvas.height + 100) lvl4NPCs.splice(i, 1);
+                if (npc.y > canvas.height + 140 || npc.y < -140) lvl4NPCs.splice(i, 1);
             }
 
             if (lvl4Distance >= LVL4_GOAL) { showVictoryScreen(); return; }
 
             // Render Tropical Environment
             ctx.fillStyle = '#0ea5e9'; ctx.fillRect(0, 0, canvas.width, canvas.height); // Sea/Sides
-            ctx.fillStyle = '#475569'; ctx.fillRect(150, 0, canvas.width - 300, canvas.height); // Road
+            ctx.fillStyle = '#4b5563'; ctx.fillRect(150, 0, canvas.width - 300, canvas.height); // Road
+            ctx.strokeStyle = 'rgba(255,255,255,0.45)'; ctx.lineWidth = 3;
+            ctx.setLineDash([34, 28]); ctx.lineDashOffset = -(lvl4Distance % 62);
+            ctx.beginPath(); ctx.moveTo(canvas.width/2, 0); ctx.lineTo(canvas.width/2, canvas.height); ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.fillStyle = 'rgba(20,20,20,0.35)'; ctx.fillRect(150, 0, 8, canvas.height); ctx.fillRect(canvas.width-158, 0, 8, canvas.height);
             
             // Side elements (Palms & Signs)
             const objOffset = (lvl4Distance * 1.5) % (canvas.height + 200) - 100;
@@ -1002,15 +1712,21 @@
             ctx.restore();
 
             // Draw Entities
-            lvl4NPCs.forEach(npc => drawVietnamScooter(ctx, npc.x, npc.y, false, npc.type));
+            lvl4NPCs.forEach(npc => drawVietnamScooter(ctx, npc.x, npc.y, false, npc.type, npc.dir));
             drawVietnamScooter(ctx, lvl4Scooter.x, lvl4Scooter.y, true, 'player');
             updateAndDrawParticles(ctx);
 
             animationFrameId = requestAnimationFrame(runLevel4Loop);
         }
 
-        function gameOver(msg) {
+        function gameOver(msg, failSound = null) {
+            gameState = 'GAMEOVER';
             cancelAnimationFrame(animationFrameId);
+            if (lvl3Interval) { clearInterval(lvl3Interval); lvl3Interval = null; }
+            stopEngineSound();
+            stopAllOneShotAudio();
+            stopBGM(true);
+            if (failSound) playCustomSfx(failSound);
             hudOverlay.classList.add('hidden');
             showUI(`
                 <div class="text-center w-full max-w-md glass-panel p-8 rounded-3xl border border-red-600 neon-border-red">
@@ -1023,11 +1739,14 @@
 
         function showVictoryScreen() {
             gameState = 'VICTORY'; cancelAnimationFrame(animationFrameId);
+            stopEngineSound();
+            stopAllOneShotAudio();
+            stopBGM(true);
             hudOverlay.classList.add('hidden');
-            playSynthSound('win');
+            playCustomSfx('victory');
 
             showUI(`
-                <div class="text-center w-full max-w-xl glass-panel p-8 rounded-3xl border-2 border-yellow-400 neon-border-yellow overflow-hidden relative">
+                <div class="text-center w-full max-w-xl glass-panel p-6 sm:p-8 rounded-3xl border-2 border-yellow-400 neon-border-yellow overflow-hidden relative">
                     <!-- Confetti effect base -->
                     <div class="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMDAlIiBoZWlnaHQ9IjEwMCUiPjxyZWN0IHdpZHRoPSIxMCIgaGVpZ2h0PSIxMCIgZmlsbD0ieWVsbG93IiBvcGFjaXR5PSIwLjEiLz48L3N2Zz4=')]"></div>
                     
@@ -1055,7 +1774,22 @@
             `);
         }
 
-        window.onload = showMenu;
+        ['pointerdown', 'touchstart', 'keydown'].forEach(evt => {
+            window.addEventListener(evt, primeAudioFromUserGesture, { passive: true });
+        });
+
+        // The browser cannot autoplay audible MP3s before any user gesture.
+        // The very first gesture therefore starts the menu track while the menu is still visible.
+        window.addEventListener('pointerdown', () => {
+            if (gameState === 'MENU' && (!currentBGM || currentBGM.paused)) playBGM('menu');
+        }, { passive: true });
+
+        window.addEventListener('load', () => {
+            showMenu();
+            if ('speechSynthesis' in window && window.speechSynthesis.onvoiceschanged !== undefined) {
+                window.speechSynthesis.onvoiceschanged = () => {};
+            }
+        });
     </script>
 </body>
 </html>
