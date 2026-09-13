@@ -1,0 +1,1061 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Алдон: Путь в Нячанг (Birthday Quest)</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Rubik:wght@400;700;900&display=swap" rel="stylesheet">
+    
+    <style>
+        :root {
+            --neon-blue: #3b82f6;
+            --neon-red: #ef4444;
+            --neon-green: #10b981;
+            --neon-yellow: #f59e0b;
+        }
+        body {
+            font-family: 'Rubik', sans-serif;
+            background: radial-gradient(circle at center, #1e293b 0%, #0f172a 100%);
+            color: #f8fafc;
+            overflow-x: hidden;
+            user-select: none;
+            touch-action: manipulation;
+        }
+        .pixel-font { font-family: 'Press Start 2P', monospace; }
+        
+        /* Glassmorphism & Neon Effects */
+        .glass-panel {
+            background: rgba(15, 23, 42, 0.7);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+        }
+        .neon-border-blue { box-shadow: 0 0 10px var(--neon-blue), inset 0 0 10px rgba(59, 130, 246, 0.2); border-color: var(--neon-blue); }
+        .neon-border-red { box-shadow: 0 0 10px var(--neon-red), inset 0 0 10px rgba(239, 68, 68, 0.2); border-color: var(--neon-red); }
+        .neon-text-yellow { text-shadow: 0 0 8px rgba(245, 158, 11, 0.8); }
+        
+        /* Animations */
+        @keyframes shake {
+            0%, 100% { transform: translate(0, 0) rotate(0deg); }
+            20% { transform: translate(-3px, 2px) rotate(-1deg); }
+            40% { transform: translate(3px, -2px) rotate(1deg); }
+            60% { transform: translate(-3px, -2px) rotate(-1deg); }
+            80% { transform: translate(3px, 2px) rotate(1deg); }
+        }
+        .shaking { animation: shake 0.3s ease-in-out; }
+        
+        @keyframes pulse-glow {
+            0%, 100% { box-shadow: 0 0 15px rgba(245, 158, 11, 0.4); }
+            50% { box-shadow: 0 0 30px rgba(245, 158, 11, 0.8); }
+        }
+        .btn-glow:hover { animation: pulse-glow 1.5s infinite; }
+
+        /* Speech Bubble Arrow */
+        .speech-bubble::after {
+            content: '';
+            position: absolute;
+            bottom: -10px;
+            left: 20px;
+            border-width: 10px 10px 0;
+            border-style: solid;
+            border-color: rgba(30, 41, 59, 0.95) transparent;
+            display: block;
+            width: 0;
+        }
+
+        /* Responsive Canvas Container */
+        #gameWrapper {
+            width: 100%;
+            max-width: 900px;
+            aspect-ratio: 16 / 10;
+            position: relative;
+        }
+        canvas {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            border-radius: 1rem;
+        }
+        
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: #0f172a; }
+        ::-webkit-scrollbar-thumb { background: #3b82f6; border-radius: 4px; }
+    </style>
+</head>
+<body class="flex flex-col items-center justify-center min-h-screen p-2 sm:p-4">
+
+    <!-- Header -->
+    <header class="w-full max-w-[900px] flex justify-between items-center mb-4 glass-panel p-3 sm:p-4 rounded-xl z-40">
+        <div class="flex items-center space-x-3">
+            <div class="bg-gradient-to-br from-yellow-400 to-orange-500 p-2 rounded-lg shadow-lg">
+                <span class="text-xl sm:text-2xl drop-shadow-md">🎂</span>
+            </div>
+            <h1 class="font-black text-[10px] sm:text-sm text-yellow-400 pixel-font neon-text-yellow leading-tight">АЛДОН:<br>ПУТЬ В НЯЧАНГ</h1>
+        </div>
+        <button id="soundToggleBtn" onclick="toggleAudio()" class="px-4 py-2 bg-slate-800/80 hover:bg-slate-700 rounded-lg flex items-center gap-2 border border-slate-600 shadow-md transition-all">
+            <span id="soundIcon" class="text-lg">🔊</span> <span id="soundText" class="text-xs sm:text-sm font-bold">ВКЛ</span>
+        </button>
+    </header>
+
+    <!-- Game Wrapper -->
+    <main id="gameWrapper" class="glass-panel rounded-2xl shadow-[0_0_40px_rgba(0,0,0,0.5)] border-2 border-slate-700/50 overflow-hidden flex flex-col">
+        
+        <!-- HUD Overlay -->
+        <div id="hudOverlay" class="hidden absolute top-0 left-0 right-0 z-20 flex justify-between items-start p-3 sm:p-4 pointer-events-none">
+            <div class="flex flex-col gap-2">
+                <div class="glass-panel px-3 py-1.5 rounded-lg border-l-4 border-l-blue-500">
+                    <span id="hudLevelName" class="font-bold text-white text-xs sm:text-sm tracking-wide">Уровень 1</span>
+                </div>
+                <div class="glass-panel px-3 py-1.5 rounded-lg border-l-4 border-l-yellow-400 flex items-center gap-2">
+                    <span class="text-[10px] text-slate-300 uppercase">Очки</span>
+                    <span id="hudScore" class="font-bold text-yellow-400 text-sm sm:text-base pixel-font neon-text-yellow">0</span>
+                </div>
+            </div>
+            
+            <div id="hpContainer" class="glass-panel px-3 py-2 rounded-lg border-l-4 border-l-green-500 flex flex-col gap-1 items-end min-w-[120px]">
+                <span class="text-[10px] text-slate-300 uppercase font-bold">Здоровье</span>
+                <div class="w-full bg-slate-900 h-3 rounded-full overflow-hidden shadow-inner border border-slate-700">
+                    <div id="hpBar" class="bg-gradient-to-r from-emerald-400 to-emerald-500 h-full w-full transition-all duration-300 ease-out shadow-[0_0_10px_rgba(16,185,129,0.8)]"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- The Canvas -->
+        <canvas id="gameCanvas" width="900" height="562"></canvas>
+
+        <!-- UI Screen Overlay -->
+        <div id="uiOverlay" class="absolute inset-0 z-30 flex flex-col items-center justify-center p-4 sm:p-6 bg-slate-950/80 backdrop-blur-sm transition-opacity duration-300">
+            <!-- Screen content injected via JS -->
+        </div>
+    </main>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const uiOverlay = document.getElementById('uiOverlay');
+        const hudOverlay = document.getElementById('hudOverlay');
+        const hpContainer = document.getElementById('hpContainer');
+
+        // Assets placeholder
+        const GAME_ASSETS = { audio: {}, images: {} };
+
+        // Audio System
+        let soundEnabled = true;
+        let audioContext = null;
+
+        function initAudioContext() {
+            if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            if (audioContext.state === 'suspended') audioContext.resume();
+        }
+
+        function toggleAudio() {
+            soundEnabled = !soundEnabled;
+            document.getElementById('soundIcon').innerText = soundEnabled ? '🔊' : '🔇';
+            document.getElementById('soundText').innerText = soundEnabled ? 'ВКЛ' : 'ВЫКЛ';
+        }
+
+        function playSynthSound(type) {
+            if (!soundEnabled) return;
+            initAudioContext();
+            try {
+                const ctx = audioContext;
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                const now = ctx.currentTime;
+
+                if (type === 'hit') {
+                    osc.type = 'sawtooth';
+                    osc.frequency.setValueAtTime(150, now);
+                    osc.frequency.exponentialRampToValueAtTime(20, now + 0.3);
+                    gain.gain.setValueAtTime(0.4, now);
+                    gain.gain.linearRampToValueAtTime(0.01, now + 0.3);
+                    osc.start(now); osc.stop(now + 0.3);
+                } else if (type === 'eat') {
+                    osc.type = 'sine';
+                    osc.frequency.setValueAtTime(400, now);
+                    osc.frequency.exponentialRampToValueAtTime(800, now + 0.1);
+                    gain.gain.setValueAtTime(0.3, now);
+                    gain.gain.linearRampToValueAtTime(0.01, now + 0.15);
+                    osc.start(now); osc.stop(now + 0.15);
+                } else if (type === 'denied') {
+                    osc.type = 'square';
+                    osc.frequency.setValueAtTime(100, now);
+                    osc.frequency.setValueAtTime(70, now + 0.2);
+                    gain.gain.setValueAtTime(0.3, now);
+                    gain.gain.linearRampToValueAtTime(0.01, now + 0.5);
+                    osc.start(now); osc.stop(now + 0.5);
+                } else if (type === 'win') {
+                    osc.type = 'triangle';
+                    [523.25, 659.25, 783.99, 1046.50].forEach((freq, i) => {
+                        osc.frequency.setValueAtTime(freq, now + i*0.15);
+                    });
+                    gain.gain.setValueAtTime(0.3, now);
+                    gain.gain.linearRampToValueAtTime(0.01, now + 0.8);
+                    osc.start(now); osc.stop(now + 0.8);
+                }
+            } catch(e) {}
+        }
+
+        let gameState = 'MENU'; 
+        let score = 0;
+        let hp = 100;
+        let animationFrameId = null;
+
+        function showUI(html, backdrop = true) {
+            uiOverlay.innerHTML = html;
+            uiOverlay.classList.remove('hidden', 'opacity-0', 'pointer-events-none');
+            uiOverlay.className = `absolute inset-0 z-30 flex flex-col items-center justify-center p-4 sm:p-6 transition-all duration-300 ${backdrop ? 'bg-slate-950/85 backdrop-blur-md pointer-events-auto' : 'pointer-events-none'}`;
+        }
+
+        function hideUI() {
+            uiOverlay.classList.add('opacity-0', 'pointer-events-none');
+            setTimeout(() => { if(uiOverlay.classList.contains('opacity-0')) uiOverlay.innerHTML = ''; }, 300);
+        }
+
+        // Particle System
+        let particles = [];
+        function spawnParticles(x, y, color, count, speed = 2, size = 4) {
+            for(let i=0; i<count; i++) {
+                particles.push({
+                    x: x, y: y,
+                    vx: (Math.random() - 0.5) * speed * 2,
+                    vy: (Math.random() - 0.5) * speed * 2,
+                    life: 1.0, color: color, size: size + Math.random()*2
+                });
+            }
+        }
+        function updateAndDrawParticles(c) {
+            for(let i = particles.length - 1; i >= 0; i--) {
+                let p = particles[i];
+                p.x += p.vx; p.y += p.vy;
+                p.life -= 0.02;
+                if(p.life <= 0) { particles.splice(i, 1); continue; }
+                c.globalAlpha = p.life;
+                c.fillStyle = p.color;
+                c.beginPath(); c.arc(p.x, p.y, p.size, 0, Math.PI*2); c.fill();
+            }
+            c.globalAlpha = 1.0;
+        }
+
+        // Input
+        const keys = { Left: false, Right: false };
+        window.addEventListener('keydown', e => {
+            if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') keys.Left = true;
+            if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') keys.Right = true;
+        });
+        window.addEventListener('keyup', e => {
+            if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') keys.Left = false;
+            if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') keys.Right = false;
+        });
+        // Touch Controls
+        canvas.addEventListener('touchstart', handleTouch, {passive: false});
+        canvas.addEventListener('touchmove', handleTouch, {passive: false});
+        canvas.addEventListener('touchend', () => { keys.Left = false; keys.Right = false; });
+        function handleTouch(e) {
+            e.preventDefault();
+            const touchX = e.touches[0].clientX;
+            const screenW = window.innerWidth;
+            if (touchX < screenW / 2) { keys.Left = true; keys.Right = false; } 
+            else { keys.Right = true; keys.Left = false; }
+        }
+
+        function updateHUD(levelName, showHP = true) {
+            document.getElementById('hudScore').innerText = score;
+            document.getElementById('hudLevelName').innerText = levelName;
+            
+            if (showHP) {
+                hpContainer.style.display = 'flex';
+                const hpBar = document.getElementById('hpBar');
+                hpBar.style.width = `${Math.max(0, hp)}%`;
+                
+                // Color based on HP
+                if (hp < 30) hpBar.className = "bg-gradient-to-r from-red-500 to-red-600 h-full w-full transition-all shadow-[0_0_15px_rgba(239,68,68,0.9)]";
+                else if (hp < 60) hpBar.className = "bg-gradient-to-r from-yellow-400 to-yellow-500 h-full w-full transition-all shadow-[0_0_15px_rgba(245,158,11,0.9)]";
+                else hpBar.className = "bg-gradient-to-r from-emerald-400 to-emerald-500 h-full w-full transition-all shadow-[0_0_15px_rgba(16,185,129,0.9)]";
+            } else {
+                hpContainer.style.display = 'none';
+            }
+        }
+
+        function triggerScreenShake() {
+            const container = document.getElementById('gameWrapper');
+            container.classList.add('shaking');
+            setTimeout(() => container.classList.remove('shaking'), 300);
+        }
+
+        function drawLadaKalina(c, x, y, width = 70, height = 120) {
+            c.save(); c.translate(x, y);
+            
+            // Drop shadow
+            c.fillStyle = 'rgba(0,0,0,0.5)';
+            c.beginPath(); c.ellipse(5, 5, width/1.6, height/1.8, 0, 0, Math.PI*2); c.fill();
+
+            // Wheels
+            c.fillStyle = '#0f172a';
+            c.fillRect(-width/2 - 6, -height/2 + 15, 10, 24);
+            c.fillRect(width/2 - 4, -height/2 + 15, 10, 24);
+            c.fillRect(-width/2 - 6, height/2 - 35, 10, 24);
+            c.fillRect(width/2 - 4, height/2 - 35, 10, 24);
+
+            // Car Body (Maroon)
+            const gradient = c.createLinearGradient(-width/2, 0, width/2, 0);
+            gradient.addColorStop(0, '#500014');
+            gradient.addColorStop(0.5, '#990026');
+            gradient.addColorStop(1, '#500014');
+            c.fillStyle = gradient;
+            c.beginPath(); c.roundRect(-width/2, -height/2, width, height, 16); c.fill();
+
+            // Windshield (Transparent showing inside)
+            c.fillStyle = '#1e293b'; // Interior dark
+            c.beginPath(); c.roundRect(-width/2 + 6, -height/2 + 30, width - 12, 35, 6); c.fill();
+            
+            // Driver (Aldon - dark hair)
+            c.fillStyle = '#1e1b18'; // Dark hair
+            c.beginPath(); c.arc(-15, -height/2 + 45, 12, 0, Math.PI*2); c.fill();
+            // Shoulders (Blue shirt)
+            c.fillStyle = '#2563eb';
+            c.fillRect(-25, -height/2 + 55, 20, 10);
+
+            // Passenger (Ilya - bald shine)
+            c.fillStyle = '#f5c89c'; // Skin
+            c.beginPath(); c.arc(15, -height/2 + 45, 13, 0, Math.PI*2); c.fill();
+            // Shine on bald head
+            c.fillStyle = 'rgba(255,255,255,0.7)';
+            c.beginPath(); c.ellipse(10, -height/2 + 40, 5, 2, -Math.PI/6, 0, Math.PI*2); c.fill();
+            // Shoulders (Red tank top)
+            c.fillStyle = '#dc2626';
+            c.fillRect(5, -height/2 + 55, 20, 10);
+
+            // Windshield Gloss reflection
+            c.fillStyle = 'rgba(255, 255, 255, 0.15)';
+            c.beginPath(); c.moveTo(-width/2 + 6, -height/2 + 30);
+            c.lineTo(width/2 - 6, -height/2 + 30); c.lineTo(width/2 - 20, -height/2 + 65); c.lineTo(-width/2 + 6, -height/2 + 45); c.fill();
+
+            // Rear Window
+            c.fillStyle = '#38bdf8'; c.globalAlpha = 0.8;
+            c.fillRect(-width/2 + 10, height/2 - 25, width - 20, 15); c.globalAlpha = 1.0;
+
+            // Roof Rack & Luggage
+            c.fillStyle = '#334155'; c.fillRect(-width/2 + 8, -height/2 + 70, width - 16, 20);
+            c.fillStyle = '#854d0e'; c.fillRect(-15, -height/2 + 68, 30, 24); // Brown bag
+
+            // Headlights
+            c.fillStyle = '#fef08a';
+            c.shadowColor = '#fef08a'; c.shadowBlur = 15;
+            c.beginPath(); c.roundRect(-width/2 + 4, -height/2 + 2, 14, 8, 3); c.fill();
+            c.beginPath(); c.roundRect(width/2 - 18, -height/2 + 2, 14, 8, 3); c.fill();
+            c.shadowBlur = 0; // reset
+            c.restore();
+        }
+
+        function drawMajorPetrenko(c, x, y) {
+            c.save(); c.translate(x, y);
+            
+            // Shoulders / Uniform
+            c.fillStyle = '#1e3a8a';
+            c.beginPath(); c.roundRect(-100, 50, 200, 150, [40, 40, 0, 0]); c.fill();
+            
+            // Epaulets (Gold)
+            c.fillStyle = '#eab308';
+            c.fillRect(-95, 55, 40, 15);
+            c.fillRect(55, 55, 40, 15);
+            
+            // Tie & Shirt
+            c.fillStyle = '#93c5fd'; c.beginPath(); c.moveTo(0, 50); c.lineTo(-20, 100); c.lineTo(20, 100); c.fill();
+            c.fillStyle = '#111'; c.beginPath(); c.moveTo(0, 70); c.lineTo(-10, 150); c.lineTo(10, 150); c.fill();
+
+            // Fat Face
+            c.fillStyle = '#fca5a5';
+            c.beginPath(); c.ellipse(0, 0, 50, 60, 0, 0, Math.PI*2); c.fill();
+            // Double chin
+            c.beginPath(); c.ellipse(0, 45, 40, 20, 0, 0, Math.PI*2); c.fill();
+
+            // Angry Eyes
+            c.lineWidth = 4; c.strokeStyle = '#450a0a';
+            c.beginPath(); c.moveTo(-35, -15); c.lineTo(-10, -5); c.stroke();
+            c.beginPath(); c.moveTo(35, -15); c.lineTo(10, -5); c.stroke();
+            c.fillStyle = '#fff'; c.beginPath(); c.arc(-20, 0, 8, 0, Math.PI*2); c.arc(20, 0, 8, 0, Math.PI*2); c.fill();
+            c.fillStyle = '#000'; c.beginPath(); c.arc(-20, 0, 3, 0, Math.PI*2); c.arc(20, 0, 3, 0, Math.PI*2); c.fill();
+
+            // Mustache
+            c.fillStyle = '#450a0a';
+            c.beginPath(); c.ellipse(0, 25, 25, 10, 0, 0, Math.PI); c.fill();
+
+            // Cap (Фуражка)
+            c.fillStyle = '#1e3a8a';
+            c.beginPath(); c.ellipse(0, -50, 55, 30, 0, Math.PI, 0); c.fill(); // Crown
+            c.fillStyle = '#dc2626'; c.fillRect(-55, -50, 110, 10); // Red band
+            c.fillStyle = '#111'; c.beginPath(); c.ellipse(0, -40, 60, 15, 0, 0, Math.PI); c.fill(); // Visor
+            // Gold Star
+            c.fillStyle = '#eab308';
+            c.font = '20px Arial'; c.textAlign = 'center'; c.textBaseline = 'middle';
+            c.fillText('★', 0, -45);
+
+            c.restore();
+        }
+
+        function showMenu() {
+            gameState = 'MENU';
+            hudOverlay.classList.add('hidden');
+
+            showUI(`
+                <div class="text-center w-full max-w-lg glass-panel p-6 sm:p-8 rounded-3xl border border-blue-500/30 neon-border-blue relative overflow-hidden">
+                    <div class="absolute -top-10 -right-10 w-32 h-32 bg-blue-500/20 rounded-full blur-3xl"></div>
+                    <div class="absolute -bottom-10 -left-10 w-32 h-32 bg-red-500/20 rounded-full blur-3xl"></div>
+                    
+                    <h2 class="text-2xl sm:text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-yellow-300 via-yellow-500 to-orange-500 mb-4 neon-text-yellow drop-shadow-md">
+                        ВЬЕТНАМСКИЙ ДРИФТ
+                    </h2>
+                    
+                    <p class="text-sm text-slate-200 mb-8 font-medium leading-relaxed drop-shadow">
+                        Пройди путь от Альметьевска до Нячанга! Уклоняйся от дронов, обмани майора на границе, поймай кумыс и выживи во вьетнамском трафике, чтобы поздравить Жоника!
+                    </p>
+
+                    <button onclick="startLevel1()" class="btn-glow w-full py-4 sm:py-5 bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 text-white font-extrabold text-sm sm:text-base rounded-2xl shadow-[0_0_20px_rgba(59,130,246,0.6)] transform hover:-translate-y-1 transition-all duration-200 pixel-font tracking-wide uppercase">
+                        Начать Квест 🚀
+                    </button>
+
+                    <div class="mt-6 flex justify-center gap-4 text-xs font-bold text-slate-400 uppercase tracking-wider">
+                        <span>Стрелки Влево/Вправо</span> <span class="text-slate-600">•</span> <span>Тапы на экране</span>
+                    </div>
+                </div>
+            `);
+        }
+
+        let lvl1Player = { x: 450, y: 440, speed: 7 };
+        let lvl1Obstacles = [];
+        let lvl1Items = [];
+        let lvl1Distance = 0;
+        const LVL1_GOAL = 3500;
+
+        function startLevel1() {
+            gameState = 'LVL1';
+            score = 0; hp = 100; lvl1Distance = 0;
+            lvl1Player.x = canvas.width / 2;
+            lvl1Obstacles = []; lvl1Items = []; particles = [];
+
+            hideUI();
+            hudOverlay.classList.remove('hidden');
+            cancelAnimationFrame(animationFrameId);
+            runLevel1Loop();
+        }
+
+        function runLevel1Loop() {
+            if (gameState !== 'LVL1') return;
+            lvl1Distance += 4;
+            updateHUD('1. Трасса М-7', true);
+            
+            // Exhaust
+            if (Math.random() < 0.7) spawnParticles(lvl1Player.x - 10, lvl1Player.y + 60, '#64748b', 1, 1, 5);
+
+            // Movement
+            if (keys.Left && lvl1Player.x > 200) lvl1Player.x -= lvl1Player.speed;
+            if (keys.Right && lvl1Player.x < canvas.width - 200) lvl1Player.x += lvl1Player.speed;
+
+            // Spawn Obstacles (Trucks & Drones)
+            if (Math.random() < 0.05) {
+                const type = Math.random() < 0.6 ? 'truck' : 'drone';
+                lvl1Obstacles.push({
+                    x: 220 + Math.random() * (canvas.width - 440),
+                    y: -100, type: type, speed: type === 'drone' ? 8 : 2 + Math.random() * 2
+                });
+            }
+
+            // Spawn Gas Canisters (A95)
+            if (Math.random() < 0.02) {
+                lvl1Items.push({ x: 220 + Math.random() * (canvas.width - 440), y: -50, speed: 4 });
+            }
+
+            // Process Obstacles
+            for (let i = lvl1Obstacles.length - 1; i >= 0; i--) {
+                let ob = lvl1Obstacles[i];
+                ob.y += ob.speed;
+                
+                // Truck Smoke
+                if (ob.type === 'truck' && Math.random() < 0.8) spawnParticles(ob.x, ob.y + 40, '#1e293b', 2, 2, 8);
+
+                let hitW = ob.type === 'truck' ? 50 : 60; // wider hitbox for wings
+                let hitH = ob.type === 'truck' ? 100 : 30;
+
+                if (Math.abs(ob.x - lvl1Player.x) < (hitW/2 + 35) && Math.abs(ob.y - lvl1Player.y) < (hitH/2 + 60)) {
+                    hp -= (ob.type === 'truck' ? 25 : 35);
+                    triggerScreenShake(); playSynthSound('hit');
+                    spawnParticles(lvl1Player.x, lvl1Player.y - 40, '#ef4444', 25, 5, 6);
+                    lvl1Obstacles.splice(i, 1);
+                    if (hp <= 0) { gameOver('Калина разбита! Авиабилеты сгорели.'); return; }
+                    continue;
+                }
+                if (ob.y > canvas.height + 150) lvl1Obstacles.splice(i, 1);
+            }
+
+            // Process Items
+            for (let i = lvl1Items.length - 1; i >= 0; i--) {
+                let it = lvl1Items[i];
+                it.y += it.speed;
+                if (Math.abs(it.x - lvl1Player.x) < 40 && Math.abs(it.y - lvl1Player.y) < 60) {
+                    score += 200;
+                    hp = Math.min(100, hp + 10);
+                    playSynthSound('eat');
+                    spawnParticles(it.x, it.y, '#10b981', 15, 4, 5); // Green sparks
+                    lvl1Items.splice(i, 1);
+                    continue;
+                }
+                if (it.y > canvas.height + 50) lvl1Items.splice(i, 1);
+            }
+
+            if (lvl1Distance >= LVL1_GOAL) { showLevel2Intro(); return; }
+
+            // Render Background
+            ctx.fillStyle = '#064e3b'; ctx.fillRect(0, 0, canvas.width, canvas.height); // Grass
+            ctx.fillStyle = '#334155'; ctx.fillRect(150, 0, canvas.width - 300, canvas.height); // Asphalt
+
+            // Road Lines
+            ctx.strokeStyle = '#fef08a'; ctx.lineWidth = 6; ctx.setLineDash([30, 30]);
+            ctx.lineDashOffset = -lvl1Distance;
+            ctx.beginPath(); ctx.moveTo(canvas.width / 2, 0); ctx.lineTo(canvas.width / 2, canvas.height); ctx.stroke();
+            ctx.setLineDash([]);
+
+            // Draw Obstacles
+            lvl1Obstacles.forEach(ob => {
+                if (ob.type === 'truck') {
+                    ctx.save(); ctx.translate(ob.x, ob.y);
+                    c = ctx;
+                    // Wheels
+                    c.fillStyle = '#000';
+                    [-25, 20].forEach(wx => { [-40, 0, 40].forEach(wy => { c.fillRect(wx, wy, 5, 15); }); });
+                    // Body
+                    c.fillStyle = '#14532d'; // Dark green KamAZ
+                    c.beginPath(); c.roundRect(-25, -50, 50, 100, 4); c.fill();
+                    // Cabin
+                    c.fillStyle = '#0f172a';
+                    c.fillRect(-20, 25, 40, 20); // windshield roof area
+                    c.fillStyle = '#38bdf8'; c.globalAlpha = 0.6;
+                    c.fillRect(-18, 27, 36, 10); // Glass
+                    c.globalAlpha = 1.0;
+                    c.restore();
+                } else {
+                    // Drone (Long thin wings)
+                    ctx.save(); ctx.translate(ob.x, ob.y);
+                    const hoverY = Math.sin(Date.now() / 100) * 4;
+                    ctx.translate(0, hoverY);
+                    
+                    // Wings (Thin and long)
+                    ctx.fillStyle = '#94a3b8';
+                    ctx.beginPath(); ctx.moveTo(0, 10); ctx.lineTo(-60, -5); ctx.lineTo(60, -5); ctx.closePath(); ctx.fill();
+                    // Body central
+                    ctx.fillStyle = '#475569';
+                    ctx.beginPath(); ctx.ellipse(0, 0, 8, 20, 0, 0, Math.PI*2); ctx.fill();
+                    
+                    // Blinking red light
+                    if (Date.now() % 400 < 200) { ctx.fillStyle = '#ef4444'; ctx.beginPath(); ctx.arc(0, 15, 4, 0, Math.PI*2); ctx.fill(); }
+                    ctx.restore();
+                }
+            });
+
+            // Draw Items (Gas Canister A95)
+            lvl1Items.forEach(it => {
+                ctx.save(); ctx.translate(it.x, it.y);
+                const bob = Math.sin(Date.now() / 150) * 5;
+                ctx.translate(0, bob);
+                
+                // Shadow
+                ctx.fillStyle = 'rgba(0,0,0,0.4)'; ctx.beginPath(); ctx.ellipse(0, 20, 15, 5, 0, 0, Math.PI*2); ctx.fill();
+                
+                // Canister body
+                ctx.fillStyle = '#dc2626'; // Red
+                ctx.beginPath(); ctx.roundRect(-15, -15, 30, 35, 4); ctx.fill();
+                // Handle/spout
+                ctx.fillStyle = '#111'; ctx.fillRect(-10, -20, 8, 5); ctx.fillRect(5, -18, 5, 3);
+                
+                // Text A95
+                ctx.fillStyle = '#fff'; ctx.font = 'bold 12px Rubik'; ctx.textAlign = 'center'; ctx.fillText('95', 0, 5);
+                ctx.restore();
+            });
+
+            // Draw Player & Particles
+            drawLadaKalina(ctx, lvl1Player.x, lvl1Player.y);
+            updateAndDrawParticles(ctx);
+
+            animationFrameId = requestAnimationFrame(runLevel1Loop);
+        }
+
+        let lvl2Suspicion = 0;
+        let lvl2Step = 0;
+        const lvl2Questions = [
+            {
+                officer: "Гражданин Алдон. Куда это мы с товарищем лысым мыльницы намылили? В стране мобилизация, а вы с баулами куда-то лыжи навострили?",
+                thought: "(Шепотом Илье): Да у него рожа как у насарожи! Держись уверенно!",
+                opts: [
+                    { t: "В Алматы! На гастро-фест бешбармака, товарищ майор!", s: 10 },
+                    { t: "В командировку по IT-сектору! Поднимать экономику!", s: 30 },
+                    { t: "К бабушке в деревню, просто через Казахстан быстрее...", s: 50 }
+                ]
+            },
+            {
+                officer: "А что с военным билетом? Категория 'В', а выглядишь как готовый штурмовик!",
+                thought: "(Алдон сдвигает брови суровее)",
+                opts: [
+                    { t: "Плоскостопие 4-й степени и аллергия на берцы!", s: 0 },
+                    { t: "Я виртуальный боец, мой автомат — клавиатура!", s: 40 },
+                    { t: "Татарлар сугышмый, татарлар чэй эчэ!", s: 15 }
+                ]
+            },
+            {
+                officer: "А этот лысый здоровый? Почему от его головы отражается свет прожектора мне прямо в глаз?!",
+                thought: "(Илья отвечает ослепительной широкой улыбкой)",
+                opts: [
+                    { t: "Это мой штурман Илья! Без него машина не едет!", s: -10 },
+                    { t: "Он просто сильно нервничает и потеет, отпустите!", s: 35 }
+                ]
+            }
+        ];
+
+        function showLevel2Intro() {
+            gameState = 'TRANSITION'; cancelAnimationFrame(animationFrameId);
+            showUI(`
+                <div class="text-center w-full max-w-lg glass-panel p-6 sm:p-8 rounded-3xl border border-red-500/50 neon-border-red">
+                    <h2 class="text-2xl font-black text-red-400 mb-2 pixel-font">УРОВЕНЬ 2</h2>
+                    <h3 class="text-lg font-bold text-white mb-4">КПП "Аэропорт Казань"</h3>
+                    <p class="text-sm text-slate-300 mb-6">Впереди суровый Майор Петренко. Отвечай правильно, чтобы не уехать на сборы вместо Вьетнама!</p>
+                    <button onclick="startLevel2()" class="btn-glow w-full py-4 bg-red-600 hover:bg-red-500 text-white font-extrabold rounded-xl shadow-lg pixel-font uppercase">Подойти к окну</button>
+                </div>
+            `);
+        }
+
+        function startLevel2() {
+            gameState = 'LVL2'; lvl2Suspicion = 0; lvl2Step = 0;
+            updateHUD('2. Паспортный контроль', false); // Hide HP
+            renderLevel2Step();
+        }
+
+        function renderLevel2Step() {
+            if (lvl2Step >= lvl2Questions.length) {
+                score += 1000;
+                startFlightCutscene();
+                return;
+            }
+
+            // Draw Background and Major on Canvas
+            ctx.fillStyle = '#0f172a'; ctx.fillRect(0, 0, canvas.width, canvas.height); // Wall
+            ctx.fillStyle = '#1e293b'; ctx.fillRect(0, canvas.height - 150, canvas.width, 150); // Desk
+            
+            // Draw Major Petrenko
+            drawMajorPetrenko(ctx, canvas.width / 2, canvas.height - 150);
+
+            const q = lvl2Questions[lvl2Step];
+            showUI(`
+                <div class="w-full max-w-2xl glass-panel border border-slate-600 p-4 sm:p-6 rounded-2xl shadow-2xl flex flex-col gap-4 mt-auto mb-4 pointer-events-auto">
+                    <div class="flex justify-between items-center border-b border-slate-700 pb-2">
+                        <span class="font-black text-red-400 text-sm tracking-wide uppercase">🛂 Майор Петренко</span>
+                        <div class="flex items-center gap-2">
+                            <span class="text-[10px] text-slate-400 font-bold uppercase">Подозрение:</span>
+                            <div class="w-24 sm:w-32 bg-slate-900 h-3 rounded-full border border-slate-700 overflow-hidden">
+                                <div class="bg-red-600 h-full transition-all duration-300" style="width: ${lvl2Suspicion}%"></div>
+                            </div>
+                            <span class="font-bold text-xs text-red-400">${lvl2Suspicion}%</span>
+                        </div>
+                    </div>
+
+                    <div class="bg-slate-900/80 p-4 rounded-xl border border-slate-700 relative speech-bubble shadow-inner">
+                        <p class="text-white text-sm leading-relaxed font-medium">"${q.officer}"</p>
+                    </div>
+
+                    <p class="text-xs italic text-blue-300 bg-blue-900/30 p-2 rounded-lg border border-blue-500/20">
+                        💭 ${q.thought}
+                    </p>
+
+                    <div class="space-y-2 mt-2">
+                        ${q.opts.map((opt, idx) => `
+                            <button onclick="answerLevel2(${idx})" class="w-full text-left p-3 sm:p-4 bg-slate-800/80 hover:bg-slate-700 border border-slate-600 hover:border-blue-400 rounded-xl text-xs sm:text-sm text-slate-200 transition-all font-medium">
+                                🔹 ${opt.t}
+                            </button>
+                        `).join('')}
+                    </div>
+                </div>
+            `, false);
+        }
+
+        function answerLevel2(optIdx) {
+            const opt = lvl2Questions[lvl2Step].opts[optIdx];
+            lvl2Suspicion = Math.max(0, lvl2Suspicion + opt.s);
+            
+            if (lvl2Suspicion >= 100) {
+                playSynthSound('denied');
+                gameOver('Майор Петренко заподозрил неладное! Вас сняли с рейса.'); return;
+            }
+            lvl2Step++; renderLevel2Step();
+        }
+
+        let cutscenePlaneX = -200;
+
+        function startFlightCutscene() {
+            gameState = 'CUTSCENE'; cutscenePlaneX = -200;
+            showUI(`
+                <div class="text-center w-full max-w-md glass-panel p-6 rounded-3xl border border-sky-500/50 mt-[10%]">
+                    <h3 class="text-xl font-bold text-sky-400 mb-2 uppercase tracking-widest">✈️ Рейс Казань — Алматы</h3>
+                    <p class="text-sm text-slate-300 mb-6">Граница РФ пройдена! Курс на перевалочный пункт.</p>
+                    <button onclick="showLevel3Intro()" class="btn-glow w-full py-4 bg-sky-600 hover:bg-sky-500 font-bold text-white rounded-xl shadow-lg uppercase text-sm">Продолжить ▶</button>
+                </div>
+            `, false);
+            runCutsceneLoop();
+        }
+
+        function runCutsceneLoop() {
+            if (gameState !== 'CUTSCENE') return;
+            cutscenePlaneX += 5; if (cutscenePlaneX > canvas.width + 200) cutscenePlaneX = -200;
+
+            // Sky
+            const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+            grad.addColorStop(0, '#0284c7'); grad.addColorStop(1, '#38bdf8');
+            ctx.fillStyle = grad; ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Clouds
+            ctx.fillStyle = 'rgba(255,255,255,0.6)';
+            ctx.beginPath(); ctx.arc(300, 150, 60, 0, Math.PI*2); ctx.arc(380, 150, 70, 0, Math.PI*2); ctx.arc(450, 160, 50, 0, Math.PI*2); ctx.fill();
+            ctx.beginPath(); ctx.arc(700, 300, 80, 0, Math.PI*2); ctx.arc(800, 280, 90, 0, Math.PI*2); ctx.fill();
+
+            // Proper Airplane Vector
+            ctx.save(); ctx.translate(cutscenePlaneX, 250);
+            
+            // Jet trails
+            ctx.fillStyle = 'rgba(255,255,255,0.4)';
+            ctx.beginPath(); ctx.ellipse(-150, -10, 40, 4, 0, 0, Math.PI*2); ctx.fill();
+            ctx.beginPath(); ctx.ellipse(-150, 10, 40, 4, 0, 0, Math.PI*2); ctx.fill();
+
+            // Main fuselage
+            ctx.fillStyle = '#f8fafc';
+            ctx.beginPath();
+            ctx.moveTo(100, 0); // Nose
+            ctx.bezierCurveTo(100, -20, -50, -20, -100, -10); // Top curve
+            ctx.lineTo(-100, 10); // Tail section bottom
+            ctx.bezierCurveTo(-50, 20, 100, 20, 100, 0); // Bottom curve
+            ctx.fill();
+
+            // Tail fin
+            ctx.fillStyle = '#ef4444'; // Red tail
+            ctx.beginPath(); ctx.moveTo(-80, -10); ctx.lineTo(-100, -50); ctx.lineTo(-120, -50); ctx.lineTo(-100, -5); ctx.fill();
+
+            // Right wing (Background)
+            ctx.fillStyle = '#cbd5e1';
+            ctx.beginPath(); ctx.moveTo(-20, 0); ctx.lineTo(-60, -60); ctx.lineTo(-20, -60); ctx.lineTo(20, 0); ctx.fill();
+
+            // Left wing (Foreground)
+            ctx.fillStyle = '#e2e8f0';
+            ctx.beginPath(); ctx.moveTo(-10, 10); ctx.lineTo(-50, 80); ctx.lineTo(-10, 80); ctx.lineTo(40, 10); ctx.fill();
+            
+            // Engines
+            ctx.fillStyle = '#475569';
+            ctx.beginPath(); ctx.roundRect(-20, 30, 25, 12, 6); ctx.fill();
+
+            // Windows
+            ctx.fillStyle = '#0f172a';
+            ctx.beginPath(); ctx.ellipse(70, -3, 10, 4, Math.PI/12, 0, Math.PI*2); ctx.fill(); // Cockpit
+            for(let i=0; i<8; i++) {
+                ctx.beginPath(); ctx.arc(40 - i*15, 0, 3, 0, Math.PI*2); ctx.fill();
+            }
+            ctx.restore();
+
+            animationFrameId = requestAnimationFrame(runCutsceneLoop);
+        }
+
+        let lvl3PlayerX = 450;
+        let lvl3Items = [];
+        let lvl3Timer = 25;
+        let lvl3Interval = null;
+
+        function showLevel3Intro() {
+            gameState = 'TRANSITION'; cancelAnimationFrame(animationFrameId);
+            showUI(`
+                <div class="text-center w-full max-w-lg glass-panel p-6 sm:p-8 rounded-3xl border border-green-500/50 neon-border-green">
+                    <h2 class="text-2xl font-black text-green-400 mb-2 pixel-font">УРОВЕНЬ 3</h2>
+                    <h3 class="text-lg font-bold text-white mb-4">Зеленый Базар Алматы</h3>
+                    <p class="text-sm text-slate-300 mb-6">Лови на поднос казы (🥩), беш (🥟) и кумыс (🥛). Уклоняйся от ушлых таксистов (🚕)! Нужно 1500 очков.</p>
+                    <button onclick="startLevel3()" class="btn-glow w-full py-4 bg-green-600 hover:bg-green-500 text-white font-extrabold rounded-xl shadow-lg pixel-font uppercase">Выйти на базар</button>
+                </div>
+            `);
+        }
+
+        function startLevel3() {
+            gameState = 'LVL3'; lvl3PlayerX = canvas.width / 2; lvl3Items = []; lvl3Timer = 25;
+            updateHUD(`3. Алматы (${lvl3Timer}с)`, true);
+            hideUI();
+            
+            if (lvl3Interval) clearInterval(lvl3Interval);
+            lvl3Interval = setInterval(() => {
+                if (gameState === 'LVL3') {
+                    lvl3Timer--; updateHUD(`3. Алматы (${lvl3Timer}с)`);
+                    if (lvl3Timer <= 0) {
+                        clearInterval(lvl3Interval);
+                        if (score >= 1500) showLevel4Intro();
+                        else gameOver('Не хватило очков на билеты до Вьетнама! (Нужно 1500)');
+                    }
+                }
+            }, 1000);
+            runLevel3Loop();
+        }
+
+        function runLevel3Loop() {
+            if (gameState !== 'LVL3') return;
+
+            if (keys.Left && lvl3PlayerX > 60) lvl3PlayerX -= 10;
+            if (keys.Right && lvl3PlayerX < canvas.width - 60) lvl3PlayerX += 10;
+
+            if (Math.random() < 0.08) {
+                const types = [{e:'🥟', pts:150}, {e:'🥩', pts:200}, {e:'🥛', pts:300}, {e:'🚕', pts:-200}];
+                const sel = types[Math.floor(Math.random() * types.length)];
+                lvl3Items.push({ x: 50 + Math.random()*(canvas.width - 100), y: -50, type: sel, speed: 4 + Math.random()*3 });
+            }
+
+            for (let i = lvl3Items.length - 1; i >= 0; i--) {
+                let it = lvl3Items[i];
+                it.y += it.speed;
+
+                // Hitbox tray
+                if (Math.abs(it.x - lvl3PlayerX) < 50 && Math.abs(it.y - (canvas.height - 110)) < 20) {
+                    if (it.type.pts > 0) {
+                        score += it.type.pts; playSynthSound('eat');
+                        hp = Math.min(100, hp + 5);
+                        spawnParticles(lvl3PlayerX, canvas.height - 110, '#fef08a', 15, 4, 4);
+                    } else {
+                        score = Math.max(0, score + it.type.pts); hp -= 25;
+                        triggerScreenShake(); playSynthSound('hit');
+                        spawnParticles(lvl3PlayerX, canvas.height - 110, '#ef4444', 20, 5, 5);
+                        if(hp <= 0) { clearInterval(lvl3Interval); gameOver('Таксисты Алматы забрали последнее здоровье и тенге!'); return; }
+                    }
+                    lvl3Items.splice(i, 1); continue;
+                }
+                if (it.y > canvas.height + 50) lvl3Items.splice(i, 1);
+            }
+
+            // Draw Background (Mountains)
+            const bgrad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+            bgrad.addColorStop(0, '#065f46'); bgrad.addColorStop(1, '#022c22');
+            ctx.fillStyle = bgrad; ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Mountain Silhouettes
+            ctx.fillStyle = '#047857'; ctx.beginPath(); ctx.moveTo(0, 300); ctx.lineTo(250, 100); ctx.lineTo(500, 350); ctx.lineTo(750, 150); ctx.lineTo(canvas.width, 300); ctx.lineTo(canvas.width, canvas.height); ctx.lineTo(0, canvas.height); ctx.fill();
+
+            // Draw Player Aldon with Tray
+            ctx.save(); ctx.translate(lvl3PlayerX, canvas.height - 80);
+            
+            // Body
+            ctx.fillStyle = '#2563eb'; ctx.beginPath(); ctx.roundRect(-25, 0, 50, 60, 10); ctx.fill();
+            // Head
+            ctx.fillStyle = '#f0c090'; ctx.beginPath(); ctx.roundRect(-18, -35, 36, 36, 8); ctx.fill();
+            // Hair
+            ctx.fillStyle = '#1e1b18'; ctx.beginPath(); ctx.roundRect(-20, -40, 40, 15, [6,6,0,0]); ctx.fill();
+            
+            // Arms & Tray
+            ctx.fillStyle = '#f0c090'; // Hands
+            ctx.beginPath(); ctx.arc(-35, -5, 10, 0, Math.PI*2); ctx.arc(35, -5, 10, 0, Math.PI*2); ctx.fill();
+            ctx.fillStyle = '#854d0e'; // Tray
+            ctx.fillRect(-60, -15, 120, 10);
+            ctx.restore();
+
+            // Draw Items (Emojis)
+            ctx.font = '40px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            lvl3Items.forEach(it => {
+                ctx.save(); ctx.translate(it.x, it.y);
+                ctx.rotate(Math.sin(it.y / 30) * 0.2);
+                // Text shadow for pop
+                ctx.shadowColor = 'rgba(0,0,0,0.5)'; ctx.shadowBlur = 5; ctx.shadowOffsetY = 3;
+                ctx.fillText(it.type.e, 0, 0);
+                ctx.restore();
+            });
+
+            updateAndDrawParticles(ctx);
+            animationFrameId = requestAnimationFrame(runLevel3Loop);
+        }
+
+        let lvl4Scooter = { x: 450, y: 400 };
+        let lvl4NPCs = [];
+        let lvl4Distance = 0;
+        const LVL4_GOAL = 2500;
+
+        function showLevel4Intro() {
+            gameState = 'TRANSITION'; cancelAnimationFrame(animationFrameId);
+            showUI(`
+                <div class="text-center w-full max-w-lg glass-panel p-6 sm:p-8 rounded-3xl border border-yellow-500/50 neon-border-yellow">
+                    <h2 class="text-2xl font-black text-yellow-400 mb-2 pixel-font">ФИНАЛ</h2>
+                    <h3 class="text-lg font-bold text-white mb-4">Вьетнам: Трафик Нячанга</h3>
+                    <p class="text-sm text-slate-300 mb-6">Последний рывок к Жонику! Выживи на арендованном байке. Берегись доставщиков и хаотичных маневров.</p>
+                    <button onclick="startLevel4()" class="btn-glow w-full py-4 bg-gradient-to-r from-yellow-500 to-orange-500 text-slate-900 font-extrabold rounded-xl shadow-lg pixel-font uppercase">Погнали!</button>
+                </div>
+            `);
+        }
+
+        function startLevel4() {
+            gameState = 'LVL4'; score += 500; hp = 100; lvl4Distance = 0;
+            lvl4Scooter.x = canvas.width / 2; lvl4NPCs = []; particles = [];
+            updateHUD('4. Трафик Нячанга', true);
+            hideUI(); runLevel4Loop();
+        }
+
+        function drawVietnamScooter(c, x, y, isPlayer, type) {
+            c.save(); c.translate(x, y);
+            c.shadowColor = 'rgba(0,0,0,0.5)'; c.shadowBlur = 10; c.shadowOffsetY = 10;
+            
+            if (isPlayer) {
+                // Player Yamaha
+                c.fillStyle = '#dc2626'; c.beginPath(); c.roundRect(-15, -35, 30, 70, 10); c.fill();
+                c.fillStyle = '#111'; c.fillRect(-8, -45, 16, 15); c.fillRect(-8, 30, 16, 15); // Wheels
+                c.fillRect(-25, -25, 50, 5); // Handlebars
+                
+                c.shadowColor = 'transparent';
+                // Aldon (Driver)
+                c.fillStyle = '#2563eb'; c.beginPath(); c.arc(0, -10, 16, 0, Math.PI*2); c.fill(); // Body
+                c.fillStyle = '#1e1b18'; c.beginPath(); c.arc(0, -10, 12, 0, Math.PI*2); c.fill(); // Dark Hair Helmet/Head
+                
+                // Ilya (Passenger)
+                c.fillStyle = '#b91c1c'; c.beginPath(); c.arc(0, 15, 18, 0, Math.PI*2); c.fill(); // Body
+                c.fillStyle = '#f5c89c'; c.beginPath(); c.arc(0, 15, 14, 0, Math.PI*2); c.fill(); // Bald head
+                c.fillStyle = 'rgba(255,255,255,0.7)'; c.beginPath(); c.ellipse(-4, 10, 5, 2, -Math.PI/4, 0, Math.PI*2); c.fill(); // Shine
+            } else {
+                // NPC
+                if (type === 'grab') {
+                    c.fillStyle = '#16a34a'; c.beginPath(); c.roundRect(-12, -25, 24, 50, 8); c.fill();
+                    c.fillStyle = '#22c55e'; c.fillRect(-15, 5, 30, 25); // Grab Box
+                    c.shadowColor = 'transparent';
+                    c.fillStyle = '#16a34a'; c.beginPath(); c.arc(0, -5, 12, 0, Math.PI*2); c.fill(); // Driver Helmet
+                } else {
+                    c.fillStyle = '#78716c'; c.beginPath(); c.roundRect(-12, -25, 24, 50, 8); c.fill();
+                    c.fillStyle = '#fef08a'; // Non La Hat
+                    c.beginPath(); c.moveTo(0, -15); c.lineTo(-15, 5); c.lineTo(15, 5); c.closePath(); c.fill();
+                }
+            }
+            c.restore();
+        }
+
+        function runLevel4Loop() {
+            if (gameState !== 'LVL4') return;
+            lvl4Distance += 5; updateHUD('4. Трафик Нячанга', true);
+            
+            // Exhaust
+            if (Math.random() < 0.6) spawnParticles(lvl4Scooter.x + 10, lvl4Scooter.y + 35, '#94a3b8', 1, 1, 4);
+
+            // Movement (Road boundaries: 150 to canvas.width - 150)
+            if (keys.Left && lvl4Scooter.x > 180) lvl4Scooter.x -= 8;
+            if (keys.Right && lvl4Scooter.x < canvas.width - 180) lvl4Scooter.x += 8;
+
+            // Spawn NPC Scooters
+            if (Math.random() < 0.06) {
+                lvl4NPCs.push({
+                    x: 180 + Math.random() * (canvas.width - 360),
+                    y: -50, speed: Math.random() < 0.1 ? 9 : 4 + Math.random()*2, // 10% fast chaotic
+                    type: Math.random() < 0.5 ? 'grab' : 'local'
+                });
+            }
+
+            // Move NPCs
+            for (let i = lvl4NPCs.length - 1; i >= 0; i--) {
+                let npc = lvl4NPCs[i];
+                npc.y += npc.speed;
+                if (Math.random() < 0.15) spawnParticles(npc.x + 8, npc.y + 25, '#94a3b8', 1, 0.5, 3);
+
+                if (Math.abs(npc.x - lvl4Scooter.x) < 35 && Math.abs(npc.y - lvl4Scooter.y) < 60) {
+                    hp -= 25; triggerScreenShake(); playSynthSound('hit');
+                    spawnParticles(lvl4Scooter.x, lvl4Scooter.y, '#f59e0b', 20, 5, 5);
+                    lvl4NPCs.splice(i, 1);
+                    if (hp <= 0) { gameOver('ДТП во Вьетнаме! Байк разбит, Жоник не дождался.'); return; }
+                    continue;
+                }
+                if (npc.y > canvas.height + 100) lvl4NPCs.splice(i, 1);
+            }
+
+            if (lvl4Distance >= LVL4_GOAL) { showVictoryScreen(); return; }
+
+            // Render Tropical Environment
+            ctx.fillStyle = '#0ea5e9'; ctx.fillRect(0, 0, canvas.width, canvas.height); // Sea/Sides
+            ctx.fillStyle = '#475569'; ctx.fillRect(150, 0, canvas.width - 300, canvas.height); // Road
+            
+            // Side elements (Palms & Signs)
+            const objOffset = (lvl4Distance * 1.5) % (canvas.height + 200) - 100;
+            const objOffset2 = ((lvl4Distance * 1.5) + 300) % (canvas.height + 200) - 100;
+
+            // Palms
+            ctx.fillStyle = '#15803d';
+            ctx.beginPath(); ctx.arc(75, objOffset, 40, 0, Math.PI*2); ctx.arc(canvas.width - 75, objOffset2, 40, 0, Math.PI*2); ctx.fill();
+
+            // Neon Signs off the road
+            ctx.save();
+            // Sign 1: Left
+            ctx.translate(15, objOffset2);
+            ctx.fillStyle = '#ef4444'; ctx.shadowColor = '#ef4444'; ctx.shadowBlur = 15;
+            ctx.fillRect(0, 0, 120, 40); ctx.shadowBlur = 0;
+            ctx.fillStyle = '#fff'; ctx.font = 'bold 16px Arial'; ctx.fillText('BÁNH MÌ', 60, 25);
+            ctx.restore();
+
+            ctx.save();
+            // Sign 2: Right
+            ctx.translate(canvas.width - 135, objOffset);
+            ctx.fillStyle = '#eab308'; ctx.shadowColor = '#eab308'; ctx.shadowBlur = 15;
+            ctx.fillRect(0, 0, 120, 40); ctx.shadowBlur = 0;
+            ctx.fillStyle = '#000'; ctx.font = 'bold 16px Arial'; ctx.fillText('PHỞ BÒ', 60, 25);
+            ctx.restore();
+
+            // Draw Entities
+            lvl4NPCs.forEach(npc => drawVietnamScooter(ctx, npc.x, npc.y, false, npc.type));
+            drawVietnamScooter(ctx, lvl4Scooter.x, lvl4Scooter.y, true, 'player');
+            updateAndDrawParticles(ctx);
+
+            animationFrameId = requestAnimationFrame(runLevel4Loop);
+        }
+
+        function gameOver(msg) {
+            cancelAnimationFrame(animationFrameId);
+            hudOverlay.classList.add('hidden');
+            showUI(`
+                <div class="text-center w-full max-w-md glass-panel p-8 rounded-3xl border border-red-600 neon-border-red">
+                    <h2 class="text-3xl font-black text-red-500 mb-4 pixel-font">GAME OVER</h2>
+                    <p class="text-sm text-slate-300 mb-8">${msg}</p>
+                    <button onclick="showMenu()" class="btn-glow w-full py-4 bg-red-600 hover:bg-red-500 text-white font-bold rounded-xl uppercase tracking-widest">В Главное Меню</button>
+                </div>
+            `);
+        }
+
+        function showVictoryScreen() {
+            gameState = 'VICTORY'; cancelAnimationFrame(animationFrameId);
+            hudOverlay.classList.add('hidden');
+            playSynthSound('win');
+
+            showUI(`
+                <div class="text-center w-full max-w-xl glass-panel p-8 rounded-3xl border-2 border-yellow-400 neon-border-yellow overflow-hidden relative">
+                    <!-- Confetti effect base -->
+                    <div class="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMDAlIiBoZWlnaHQ9IjEwMCUiPjxyZWN0IHdpZHRoPSIxMCIgaGVpZ2h0PSIxMCIgZmlsbD0ieWVsbG93IiBvcGFjaXR5PSIwLjEiLz48L3N2Zz4=')]"></div>
+                    
+                    <div class="text-6xl mb-4 drop-shadow-xl relative z-10">🥳🎉🇻🇳</div>
+                    <h2 class="text-3xl sm:text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-yellow-300 to-yellow-600 mb-2 neon-text-yellow relative z-10">
+                        С ДНЕМ РОЖДЕНИЯ, АЛДОН!
+                    </h2>
+                    <p class="text-lg text-emerald-400 font-bold mb-6 relative z-10">Ты успешно добрался во Вьетнам к Жонику!</p>
+                    
+                    <div class="bg-slate-900/80 p-5 rounded-2xl border border-slate-700 text-left mb-8 space-y-3 text-sm text-slate-200 relative z-10 shadow-inner">
+                        <div class="flex justify-between items-center border-b border-slate-700 pb-2">
+                            <span class="font-bold">Финальный счет:</span>
+                            <span class="text-2xl font-black text-yellow-400 pixel-font">${score}</span>
+                        </div>
+                        <p class="flex items-center gap-2"><span>✅</span> Ралли Альметьевск — Казань пройдено!</p>
+                        <p class="flex items-center gap-2"><span>✅</span> Майор Петренко остался с носом!</p>
+                        <p class="flex items-center gap-2"><span>✅</span> Базар Алматы опустошен!</p>
+                        <p class="flex items-center gap-2"><span>✅</span> Трафик Нячанга побежден!</p>
+                    </div>
+
+                    <button onclick="showMenu()" class="btn-glow relative z-10 w-full py-4 bg-gradient-to-r from-yellow-500 to-orange-500 text-slate-900 font-extrabold text-base rounded-xl shadow-lg uppercase tracking-wider">
+                        Играть Еще Раз 🎮
+                    </button>
+                </div>
+            `);
+        }
+
+        window.onload = showMenu;
+    </script>
+</body>
+</html>
